@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(flutter create:*)",
+      "Bash(/mnt/d/Proj/flutter/bin/flutter create echotype --project-name echotype --org com.echotype)",
+      "Bash(mkdir:*)",
+      "WebFetch(domain:pub.dev)",
+      "WebFetch(domain:flutter-sound.canardoux.xyz)",
+      "WebFetch(domain:stackoverflow.com)",
+      "Bash(dart tool/generate_app_icon.dart:*)"
+    ],
+    "deny": []
+  }
+}
