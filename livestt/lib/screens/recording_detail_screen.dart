@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'dart:math' as math;
 import '../widgets/global_toast.dart';
-import '../data/dummy_data.dart';
+import '../services/file_recording_manager.dart';
 
 class RecordingDetailScreen extends StatefulWidget {
   final String sessionId;
@@ -19,7 +19,7 @@ class RecordingDetailScreen extends StatefulWidget {
 
 class _RecordingDetailScreenState extends State<RecordingDetailScreen> {
   bool _isPlaying = false;
-  double _currentPosition = 0.3; // 0.0 to 1.0
+  double _currentPosition = 0.0; // 0.0 to 1.0
   late double _totalDuration;
   List<double> _waveformData = [];
   late Map<String, dynamic> _recordingData;
@@ -27,19 +27,23 @@ class _RecordingDetailScreenState extends State<RecordingDetailScreen> {
   // Search functionality
   bool _isSearching = false;
   String _searchQuery = '';
-  List<int> _searchResults = [];
+  List<Map<String, int>> _searchResults = []; // {textIndex, matchIndex}
   int _currentSearchIndex = -1;
   final TextEditingController _searchController = TextEditingController();
 
   @override
   void initState() {
     super.initState();
-    
-    // Load recording data from centralized data
-    _recordingData = DummyData.getRecordingDetail(widget.sessionId) ?? {};
-    _totalDuration = (_recordingData['totalSeconds'] ?? 930).toDouble();
-    
+    _loadRecordingData();
     _generateWaveformData();
+  }
+
+  Future<void> _loadRecordingData() async {
+    final data = await FileRecordingManager.getRecordingDetail(widget.sessionId);
+    setState(() {
+      _recordingData = data ?? {};
+      _totalDuration = (_recordingData['totalSeconds'] ?? 930).toDouble();
+    });
   }
 
   void _generateWaveformData() {
@@ -53,6 +57,24 @@ class _RecordingDetailScreenState extends State<RecordingDetailScreen> {
     final minutes = (seconds ~/ 60).toString().padLeft(2, '0');
     final secs = (seconds % 60).toInt().toString().padLeft(2, '0');
     return '$minutes:$secs';
+  }
+
+  // Helper function to check if current playback time matches this text item
+  bool _isCurrentlyPlaying(int textIndex, List<Map<String, dynamic>> transcripts) {
+    if (textIndex >= transcripts.length) return false;
+    
+    final currentSeconds = _currentPosition * _totalDuration;
+    final currentTextSeconds = transcripts[textIndex]['seconds'] as int;
+    
+    // Check if current time falls within this text item's range
+    // If it's the last item, it's current if playback time >= its start time
+    if (textIndex == transcripts.length - 1) {
+      return currentSeconds >= currentTextSeconds;
+    }
+    
+    // For other items, check if current time is between this item and the next
+    final nextTextSeconds = transcripts[textIndex + 1]['seconds'] as int;
+    return currentSeconds >= currentTextSeconds && currentSeconds < nextTextSeconds;
   }
 
   void _enterSearch() {
@@ -81,10 +103,23 @@ class _RecordingDetailScreenState extends State<RecordingDetailScreen> {
         // Search through actual recording transcripts
         final transcripts = _recordingData['transcripts'] as List<Map<String, dynamic>>? ?? [];
 
-        for (int i = 0; i < transcripts.length; i++) {
-          final text = (transcripts[i]['text']! as String).toLowerCase();
-          if (text.contains(_searchQuery)) {
-            _searchResults.add(i);
+        for (int textIndex = 0; textIndex < transcripts.length; textIndex++) {
+          final text = (transcripts[textIndex]['text']! as String).toLowerCase();
+          
+          // Find all matches in this text
+          int start = 0;
+          int matchIndex = 0;
+          while (start < text.length) {
+            final index = text.indexOf(_searchQuery, start);
+            if (index == -1) break;
+            
+            _searchResults.add({
+              'textIndex': textIndex,
+              'matchIndex': matchIndex,
+            });
+            
+            start = index + _searchQuery.length;
+            matchIndex++;
           }
         }
 
@@ -115,11 +150,96 @@ class _RecordingDetailScreenState extends State<RecordingDetailScreen> {
   }
 
   void _jumpToSearchResult(int resultIndex) {
-    final textIndex = _searchResults[resultIndex];
+    final searchResult = _searchResults[resultIndex];
+    final textIndex = searchResult['textIndex']!;
+    final matchIndex = searchResult['matchIndex']!;
     // This would scroll to the item and highlight it
-    // For now, we'll just show a toast
-    TOAST.sendMessage(MessageType.normal, 
-      'Found at item ${textIndex + 1} (${resultIndex + 1}/${_searchResults.length})');
+    // Toast removed per user request
+  }
+
+  // Helper function to build highlighted text
+  Widget _buildHighlightedText(String text, int textIndex) {
+    if (_searchQuery.isEmpty) {
+      return Text(
+        text,
+        style: const TextStyle(
+          fontSize: 13, 
+          color: Colors.white,
+          height: 1.2,
+        ),
+      );
+    }
+
+    // Check if this text has any matches
+    final hasMatches = _searchResults.any((result) => result['textIndex'] == textIndex);
+    
+    if (!hasMatches) {
+      return Text(
+        text,
+        style: const TextStyle(
+          fontSize: 13, 
+          color: Colors.white,
+          height: 1.2,
+        ),
+      );
+    }
+
+    // Get current match info
+    final currentMatch = _searchResults.isNotEmpty && _currentSearchIndex >= 0 
+        ? _searchResults[_currentSearchIndex] 
+        : null;
+    final currentTextIndex = currentMatch?['textIndex'];
+    final currentMatchIndex = currentMatch?['matchIndex'];
+
+    // Split text and highlight search matches
+    final lowerText = text.toLowerCase();
+    final lowerQuery = _searchQuery.toLowerCase();
+    
+    List<TextSpan> spans = [];
+    int start = 0;
+    int matchIndex = 0;
+    
+    while (start < text.length) {
+      final index = lowerText.indexOf(lowerQuery, start);
+      if (index == -1) {
+        // No more matches, add remaining text
+        spans.add(TextSpan(
+          text: text.substring(start),
+          style: const TextStyle(fontSize: 13, color: Colors.white, height: 1.2),
+        ));
+        break;
+      }
+      
+      // Add text before match
+      if (index > start) {
+        spans.add(TextSpan(
+          text: text.substring(start, index),
+          style: const TextStyle(fontSize: 13, color: Colors.white, height: 1.2),
+        ));
+      }
+      
+      // Check if this is the current match
+      final isCurrentMatch = currentTextIndex == textIndex && currentMatchIndex == matchIndex;
+      
+      // Add highlighted match (preserve original case)
+      spans.add(TextSpan(
+        text: text.substring(index, index + _searchQuery.length),
+        style: TextStyle(
+          fontSize: 13,
+          color: Colors.black,
+          height: 1.2,
+          backgroundColor: isCurrentMatch ? Colors.orange : Colors.grey.withOpacity(0.5),
+          fontWeight: FontWeight.bold,
+        ),
+      ));
+      
+      start = index + lowerQuery.length;
+      matchIndex++;
+    }
+    
+    return RichText(
+      text: TextSpan(children: spans),
+    );
   }
 
   @override
@@ -155,6 +275,20 @@ class _RecordingDetailScreenState extends State<RecordingDetailScreen> {
               IconButton(
                 icon: Icon(Icons.keyboard_arrow_down),
                 onPressed: _currentSearchIndex < _searchResults.length - 1 ? _nextSearchResult : null,
+              ),
+              // Search result counter
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 8.0),
+                child: Center(
+                  child: Text(
+                    '${_currentSearchIndex + 1}/${_searchResults.length}',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 14,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                ),
               ),
             ],
             IconButton(
@@ -248,8 +382,6 @@ class _RecordingDetailScreenState extends State<RecordingDetailScreen> {
                           setState(() {
                             _currentPosition = relativePosition.clamp(0.0, 1.0);
                           });
-                          TOAST.sendMessage(MessageType.normal, 
-                            'Seek to ${_formatDuration(_currentPosition * _totalDuration)}');
                         },
                         onPanUpdate: (details) {
                           final RenderBox box = context.findRenderObject() as RenderBox;
@@ -310,6 +442,12 @@ class _RecordingDetailScreenState extends State<RecordingDetailScreen> {
                   child: Card(
                     color: Colors.grey[900],
                     margin: const EdgeInsets.only(bottom: 1),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(4.0),
+                      side: _isCurrentlyPlaying(index, transcripts)
+                          ? BorderSide(color: Colors.white, width: 2.0)
+                          : BorderSide.none,
+                    ),
                     child: Padding(
                       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 14),
                       child: Row(
@@ -337,14 +475,7 @@ class _RecordingDetailScreenState extends State<RecordingDetailScreen> {
                           const SizedBox(width: 6),
                           // Text in the middle, expanded
                           Expanded(
-                            child: Text(
-                              textData['text']! as String,
-                              style: const TextStyle(
-                                fontSize: 13, 
-                                color: Colors.white,
-                                height: 1.2,
-                              ),
-                            ),
+                            child: _buildHighlightedText(textData['text']! as String, index),
                           ),
                           // Copy button on the right - prevent propagation
                           _CopyButton(
@@ -378,17 +509,17 @@ class _RecordingDetailScreenState extends State<RecordingDetailScreen> {
             ListTile(
               leading: const Icon(Icons.text_snippet, color: Colors.grey),
               title: const Text('Text file (.txt)', style: TextStyle(color: Colors.white)),
-              onTap: () {
+              onTap: () async {
                 Navigator.pop(context);
-                TOAST.sendMessage(MessageType.indicator, 'Stage 2: TXT export (UI only)');
+                await _exportToFormat('txt');
               },
             ),
             ListTile(
               leading: const Icon(Icons.table_chart, color: Colors.grey),
               title: const Text('CSV file (.csv)', style: TextStyle(color: Colors.white)),
-              onTap: () {
+              onTap: () async {
                 Navigator.pop(context);
-                TOAST.sendMessage(MessageType.indicator, 'Stage 2: CSV export (UI only)');
+                await _exportToFormat('csv');
               },
             ),
           ],
@@ -401,6 +532,45 @@ class _RecordingDetailScreenState extends State<RecordingDetailScreen> {
         ],
       ),
     );
+  }
+
+  Future<void> _exportToFormat(String format) async {
+    try {
+      String? content;
+      String fileName = '';
+      
+      if (format == 'txt') {
+        content = await FileRecordingManager.exportToTxt(widget.sessionId);
+        fileName = '${widget.sessionId}.txt';
+      } else if (format == 'csv') {
+        content = await FileRecordingManager.exportToCsv(widget.sessionId);
+        fileName = '${widget.sessionId}.csv';
+      } else {
+        TOAST.sendMessage(MessageType.fail, 'Invalid export format');
+        return;
+      }
+      
+      if (content != null) {
+        final success = await FileRecordingManager.saveExportedFile(
+          content: content,
+          fileName: fileName,
+        );
+        
+        if (success) {
+          TOAST.sendMessage(MessageType.indicator, 
+            'Exported to $fileName successfully');
+        } else {
+          TOAST.sendMessage(MessageType.fail, 
+            'Failed to export $fileName');
+        }
+      } else {
+        TOAST.sendMessage(MessageType.fail, 
+          'Failed to generate export content');
+      }
+    } catch (e) {
+      TOAST.sendMessage(MessageType.fail, 
+        'Export error: $e');
+    }
   }
 }
 

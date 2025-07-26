@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'recording_detail_screen.dart';
 import '../widgets/global_toast.dart';
-import '../data/dummy_data.dart';
+import '../services/file_recording_manager.dart';
 
 class RecordingsScreen extends StatefulWidget {
   const RecordingsScreen({super.key});
@@ -18,8 +18,15 @@ class _RecordingsScreenState extends State<RecordingsScreen> {
   @override
   void initState() {
     super.initState();
-    _filteredSessions = DummyData.getRecordingsList();
+    _loadRecordings();
     _searchController.addListener(_filterSessions);
+  }
+
+  Future<void> _loadRecordings() async {
+    final recordings = await FileRecordingManager.getRecordingsList();
+    setState(() {
+      _filteredSessions = recordings;
+    });
   }
 
   @override
@@ -28,9 +35,9 @@ class _RecordingsScreenState extends State<RecordingsScreen> {
     super.dispose();
   }
 
-  void _filterSessions() {
+  void _filterSessions() async {
     final query = _searchController.text.toLowerCase();
-    final allSessions = DummyData.getRecordingsList();
+    final allSessions = await FileRecordingManager.getRecordingsList();
     setState(() {
       if (query.isEmpty) {
         _filteredSessions = allSessions;
