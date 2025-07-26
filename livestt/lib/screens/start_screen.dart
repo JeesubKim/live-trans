@@ -3,6 +3,7 @@ import 'live_caption_screen.dart';
 import 'recordings_screen.dart';
 import '../widgets/subtitify_icon.dart';
 import '../widgets/global_toast.dart';
+import '../core/core.dart';
 
 class StartScreen extends StatefulWidget {
   const StartScreen({super.key});
@@ -12,21 +13,54 @@ class StartScreen extends StatefulWidget {
 }
 
 class _StartScreenState extends State<StartScreen> {
-  String _selectedLanguage = 'en_US';
-  String _selectedModel = 'whisper-base';
+  SttLanguage _selectedLanguage = SttLanguage.english;
+  SttModel? _selectedModel;
+
+  @override
+  void initState() {
+    super.initState();
+    // Set default model based on selected language
+    _selectedModel = _selectedLanguage.recommendedModel;
+  }
+
+  void _onLanguageChanged(SttLanguage newLanguage) {
+    setState(() {
+      _selectedLanguage = newLanguage;
+      // Auto-select recommended model for the new language
+      _selectedModel = newLanguage.recommendedModel;
+    });
+    
+    TOAST.sendMessage(
+      MessageType.normal, 
+      'Language changed to ${newLanguage.displayName}. Recommended model: ${newLanguage.recommendedModel.displayName}'
+    );
+  }
+
+  void _onModelChanged(SttModel newModel) {
+    setState(() {
+      _selectedModel = newModel;
+    });
+    
+    TOAST.sendMessage(
+      MessageType.normal, 
+      'STT model changed to ${newModel.displayName}'
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      body: OrientationBuilder(
-        builder: (context, orientation) {
-          final isPortrait = orientation == Orientation.portrait;
-          
-          return Padding(
-            padding: const EdgeInsets.all(24.0),
-            child: isPortrait ? _buildPortraitLayout() : _buildLandscapeLayout(),
-          );
-        },
+      body: SafeArea(
+        child: OrientationBuilder(
+          builder: (context, orientation) {
+            final isPortrait = orientation == Orientation.portrait;
+            
+            return Padding(
+              padding: const EdgeInsets.all(24.0),
+              child: isPortrait ? _buildPortraitLayout() : _buildLandscapeLayout(),
+            );
+          },
+        ),
       ),
     );
   }
@@ -36,96 +70,60 @@ class _StartScreenState extends State<StartScreen> {
       mainAxisAlignment: MainAxisAlignment.center,
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-            // App logo - Custom Wave with SUBTITIFY text (larger)
-            const SubtitifyIcon(
-              size: 120,
-              fontSize: 14,
-            ),
-            const SizedBox(height: 8),
-            
-            // App description
-            const Text(
-              'Real-time Speech-to-Text',
-              textAlign: TextAlign.center,
-              style: TextStyle(
-                fontSize: 16,
-                color: Colors.grey,
-              ),
-            ),
-            const SizedBox(height: 48),
-            
-            // Language selection card
-            Card(
-              elevation: 4,
-              color: Colors.grey[900],
-              child: Padding(
-                padding: const EdgeInsets.all(16.0),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Text(
-                      'Language',
-                      style: TextStyle(
-                        fontSize: 18,
-                        fontWeight: FontWeight.bold,
-                        color: Colors.white,
-                      ),
-                    ),
-                    const SizedBox(height: 16),
-                    
-                    // Language dropdown
-                    DropdownButtonFormField<String>(
-                      value: _selectedLanguage,
-                      decoration: const InputDecoration(
-                        labelText: 'Select Language',
-                        labelStyle: TextStyle(color: Colors.grey),
-                        border: OutlineInputBorder(),
-                        prefixIcon: Icon(Icons.language, color: Colors.grey),
-                      ),
-                      dropdownColor: Colors.grey[800],
-                      style: const TextStyle(color: Colors.white),
-                      items: const [
-                        DropdownMenuItem(value: 'en_US', child: Text('English (US)')),
-                        DropdownMenuItem(value: 'ko_KR', child: Text('Korean')),
-                        DropdownMenuItem(value: 'ja_JP', child: Text('Japanese')),
-                      ],
-                      onChanged: (value) {
-                        setState(() {
-                          _selectedLanguage = value!;
-                        });
-                      },
-                    ),
-                    
-                    const SizedBox(height: 16),
-                    
-                    // STT Model dropdown
-                    DropdownButtonFormField<String>(
-                      value: _selectedModel,
-                      decoration: const InputDecoration(
-                        labelText: 'STT Model',
-                        labelStyle: TextStyle(color: Colors.grey),
-                        border: OutlineInputBorder(),
-                        prefixIcon: Icon(Icons.psychology, color: Colors.grey),
-                      ),
-                      dropdownColor: Colors.grey[800],
-                      style: const TextStyle(color: Colors.white),
-                      items: const [
-                        DropdownMenuItem(value: 'whisper-base', child: Text('Whisper Base')),
-                        DropdownMenuItem(value: 'whisper-small', child: Text('Whisper Small')),
-                        DropdownMenuItem(value: 'whisper-medium', child: Text('Whisper Medium')),
-                        DropdownMenuItem(value: 'whisper-large', child: Text('Whisper Large')),
-                      ],
-                      onChanged: (value) {
-                        setState(() {
-                          _selectedModel = value!;
-                        });
-                      },
-                    ),
-                  ],
-                ),
-              ),
-            ),
-            const SizedBox(height: 32),
+        // App logo - Custom Wave with SUBTITIFY text (larger)
+        const Center(
+          child: SubtitifyIcon(
+            size: 120,
+            fontSize: 14,
+          ),
+        ),
+        const SizedBox(height: 8),
+        
+        // App description
+        const Text(
+          'Real-time Speech-to-Text',
+          textAlign: TextAlign.center,
+          style: TextStyle(
+            fontSize: 16,
+            color: Colors.grey,
+          ),
+        ),
+        const SizedBox(height: 24),
+        
+        // Language selection (same as landscape)
+        _buildCompactSelector(
+          icon: Icons.language,
+          label: 'Language',
+          value: _selectedLanguage.displayName,
+          items: SttLanguage.values.map((lang) => {
+            'value': lang,
+            'label': lang.displayName,
+          }).toList(),
+          onChanged: (value) {
+            if (value is SttLanguage) {
+              _onLanguageChanged(value);
+            }
+          },
+        ),
+        
+        const SizedBox(height: 16),
+        
+        // STT Model selection (same as landscape)
+        _buildCompactSelector(
+          icon: Icons.psychology,
+          label: 'STT Model',
+          value: _selectedModel?.displayName ?? 'None',
+          items: _selectedLanguage.availableModels.map((model) => {
+            'value': model,
+            'label': '${model.icon} ${model.displayName}${model == _selectedLanguage.recommendedModel ? ' (Recommended)' : ''}',
+          }).toList(),
+          onChanged: (value) {
+            if (value is SttModel) {
+              _onModelChanged(value);
+            }
+          },
+        ),
+            const SizedBox(height: 24),
             
             // Start button
             ElevatedButton(
@@ -134,7 +132,10 @@ class _StartScreenState extends State<StartScreen> {
                   context,
                   PageRouteBuilder(
                     pageBuilder: (context, animation, secondaryAnimation) => 
-                        const LiveCaptionScreen(),
+                        LiveCaptionScreen(
+                          selectedLanguage: _selectedLanguage.displayName,
+                          selectedModel: _selectedModel?.displayName ?? 'Whisper Base',
+                        ),
                     transitionDuration: const Duration(milliseconds: 300),
                     transitionsBuilder: (context, animation, secondaryAnimation, child) {
                       const begin = Offset(1.0, 0.0); // Start from right
@@ -206,8 +207,8 @@ class _StartScreenState extends State<StartScreen> {
                 ],
               ),
             ),
-      ],
-    );
+        ],
+      );
   }
   
   Widget _buildLandscapeLayout() {
@@ -248,16 +249,15 @@ class _StartScreenState extends State<StartScreen> {
               _buildCompactSelector(
                 icon: Icons.language,
                 label: 'Language',
-                value: _getLanguageDisplayName(_selectedLanguage),
-                items: const [
-                  {'value': 'en_US', 'label': 'English (US)'},
-                  {'value': 'ko_KR', 'label': 'Korean'},
-                  {'value': 'ja_JP', 'label': 'Japanese'},
-                ],
+                value: _selectedLanguage.displayName,
+                items: SttLanguage.values.map((lang) => {
+                  'value': lang,
+                  'label': lang.displayName,
+                }).toList(),
                 onChanged: (value) {
-                  setState(() {
-                    _selectedLanguage = value;
-                  });
+                  if (value is SttLanguage) {
+                    _onLanguageChanged(value);
+                  }
                 },
               ),
               
@@ -267,17 +267,15 @@ class _StartScreenState extends State<StartScreen> {
               _buildCompactSelector(
                 icon: Icons.psychology,
                 label: 'STT Model',
-                value: _getModelDisplayName(_selectedModel),
-                items: const [
-                  {'value': 'whisper-base', 'label': 'Whisper Base'},
-                  {'value': 'whisper-small', 'label': 'Whisper Small'},
-                  {'value': 'whisper-medium', 'label': 'Whisper Medium'},
-                  {'value': 'whisper-large', 'label': 'Whisper Large'},
-                ],
+                value: _selectedModel?.displayName ?? 'None',
+                items: _selectedLanguage.availableModels.map((model) => {
+                  'value': model,
+                  'label': '${model.icon} ${model.displayName}${model == _selectedLanguage.recommendedModel ? ' (Recommended)' : ''}',
+                }).toList(),
                 onChanged: (value) {
-                  setState(() {
-                    _selectedModel = value;
-                  });
+                  if (value is SttModel) {
+                    _onModelChanged(value);
+                  }
                 },
               ),
               
@@ -290,7 +288,10 @@ class _StartScreenState extends State<StartScreen> {
                     context,
                     PageRouteBuilder(
                       pageBuilder: (context, animation, secondaryAnimation) => 
-                          const LiveCaptionScreen(),
+                          LiveCaptionScreen(
+                            selectedLanguage: _selectedLanguage.displayName,
+                            selectedModel: _selectedModel?.displayName ?? 'Whisper Base',
+                          ),
                       transitionDuration: const Duration(milliseconds: 300),
                       transitionsBuilder: (context, animation, secondaryAnimation, child) {
                         const begin = Offset(1.0, 0.0);
@@ -373,8 +374,8 @@ class _StartScreenState extends State<StartScreen> {
     required IconData icon,
     required String label,
     required String value,
-    required List<Map<String, String>> items,
-    required Function(String) onChanged,
+    required List<Map<String, dynamic>> items,
+    required Function(dynamic) onChanged,
   }) {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
@@ -388,8 +389,10 @@ class _StartScreenState extends State<StartScreen> {
           Icon(icon, color: Colors.grey, size: 16),
           const SizedBox(width: 8),
           Expanded(
-            child: DropdownButton<String>(
-              value: items.firstWhere((item) => item['label'] == value)['value'],
+            child: DropdownButton<dynamic>(
+              value: items.firstWhere((item) => item['label'] == value || 
+                      (item['value'] is SttLanguage && (item['value'] as SttLanguage).displayName == value) ||
+                      (item['value'] is SttModel && (item['value'] as SttModel).displayName == value))['value'],
               dropdownColor: Colors.grey[800],
               style: const TextStyle(color: Colors.white, fontSize: 12),
               underline: Container(),
@@ -412,32 +415,5 @@ class _StartScreenState extends State<StartScreen> {
     );
   }
   
-  String _getLanguageDisplayName(String code) {
-    switch (code) {
-      case 'en_US':
-        return 'English (US)';
-      case 'ko_KR':
-        return 'Korean';
-      case 'ja_JP':
-        return 'Japanese';
-      default:
-        return code;
-    }
-  }
-  
-  String _getModelDisplayName(String model) {
-    switch (model) {
-      case 'whisper-base':
-        return 'Whisper Base';
-      case 'whisper-small':
-        return 'Whisper Small';
-      case 'whisper-medium':
-        return 'Whisper Medium';
-      case 'whisper-large':
-        return 'Whisper Large';
-      default:
-        return model;
-    }
-  }
 }
 

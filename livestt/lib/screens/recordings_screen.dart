@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 import 'recording_detail_screen.dart';
+import '../widgets/global_toast.dart';
+import '../data/dummy_data.dart';
 
 class RecordingsScreen extends StatefulWidget {
   const RecordingsScreen({super.key});
@@ -11,37 +13,12 @@ class RecordingsScreen extends StatefulWidget {
 class _RecordingsScreenState extends State<RecordingsScreen> {
   final TextEditingController _searchController = TextEditingController();
   
-  // Sample recording data
-  final List<Map<String, dynamic>> _dummySessions = [
-    {
-      'id': '1',
-      'name': 'Meeting Recording 2024-01-15',
-      'duration': '15:30',
-      'date': '2024-01-15 14:30',
-      'textCount': 45,
-    },
-    {
-      'id': '2', 
-      'name': 'Lecture Recording 2024-01-14',
-      'duration': '42:15',
-      'date': '2024-01-14 10:00',
-      'textCount': 128,
-    },
-    {
-      'id': '3',
-      'name': 'Interview Recording 2024-01-13', 
-      'duration': '28:45',
-      'date': '2024-01-13 16:20',
-      'textCount': 67,
-    },
-  ];
-  
   List<Map<String, dynamic>> _filteredSessions = [];
 
   @override
   void initState() {
     super.initState();
-    _filteredSessions = List.from(_dummySessions);
+    _filteredSessions = DummyData.getRecordingsList();
     _searchController.addListener(_filterSessions);
   }
 
@@ -53,11 +30,12 @@ class _RecordingsScreenState extends State<RecordingsScreen> {
 
   void _filterSessions() {
     final query = _searchController.text.toLowerCase();
+    final allSessions = DummyData.getRecordingsList();
     setState(() {
       if (query.isEmpty) {
-        _filteredSessions = List.from(_dummySessions);
+        _filteredSessions = allSessions;
       } else {
-        _filteredSessions = _dummySessions.where((session) {
+        _filteredSessions = allSessions.where((session) {
           return session['name'].toLowerCase().contains(query);
         }).toList();
       }
@@ -75,7 +53,7 @@ class _RecordingsScreenState extends State<RecordingsScreen> {
       ),
       body: Column(
         children: [
-          // 검색 바
+          // Search bar
           Padding(
             padding: const EdgeInsets.all(16.0),
             child: TextField(
@@ -96,12 +74,12 @@ class _RecordingsScreenState extends State<RecordingsScreen> {
             ),
           ),
           
-          // 녹음 목록
+          // Recording list
           Expanded(
             child: _filteredSessions.isEmpty
                 ? const Center(
                     child: Text(
-                      '저장된 녹음이 없습니다.',
+                      'No saved recordings.',
                       style: TextStyle(
                         fontSize: 16,
                         color: Colors.grey,
@@ -132,7 +110,7 @@ class _RecordingsScreenState extends State<RecordingsScreen> {
                                 children: [
                                   Text('⏱️ ${session['duration']}'),
                                   const SizedBox(width: 16),
-                                  Text('📝 ${session['textCount']}개 텍스트'),
+                                  Text('📝 ${session['textCount']} texts'),
                                 ],
                               ),
                             ],
@@ -145,7 +123,7 @@ class _RecordingsScreenState extends State<RecordingsScreen> {
                                   children: [
                                     Icon(Icons.play_arrow),
                                     SizedBox(width: 8),
-                                    Text('재생'),
+                                    Text('Play'),
                                   ],
                                 ),
                               ),
@@ -155,7 +133,7 @@ class _RecordingsScreenState extends State<RecordingsScreen> {
                                   children: [
                                     Icon(Icons.download),
                                     SizedBox(width: 8),
-                                    Text('내보내기'),
+                                    Text('Export'),
                                   ],
                                 ),
                               ),
@@ -165,15 +143,33 @@ class _RecordingsScreenState extends State<RecordingsScreen> {
                                   children: [
                                     Icon(Icons.delete, color: Colors.red),
                                     SizedBox(width: 8),
-                                    Text('삭제', style: TextStyle(color: Colors.red)),
+                                    Text('Delete', style: TextStyle(color: Colors.red)),
                                   ],
                                 ),
                               ),
                             ],
                             onSelected: (value) {
-                              ScaffoldMessenger.of(context).showSnackBar(
-                                SnackBar(content: Text('2단계: $value 기능 (UI만)')),
-                              );
+                              String message;
+                              MessageType type = MessageType.normal;
+                              
+                              switch (value) {
+                                case 'play':
+                                  message = 'Playing recording...';
+                                  type = MessageType.normal;
+                                  break;
+                                case 'export':
+                                  message = 'Exporting recording...';
+                                  type = MessageType.indicator;
+                                  break;
+                                case 'delete':
+                                  message = 'Recording deleted';
+                                  type = MessageType.fail;
+                                  break;
+                                default:
+                                  message = 'Stage 2: $value feature (UI only)';
+                              }
+                              
+                              TOAST.sendMessage(type, message);
                             },
                           ),
                           onTap: () {

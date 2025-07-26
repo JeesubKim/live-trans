@@ -30,9 +30,8 @@ class SubtitifyApp extends StatelessWidget {
         ),
         useMaterial3: true,
       ),
-      home: const GlobalToastOverlay(
-        child: StartScreen(),
-      ),
+      builder: (context, child) => GlobalToastOverlay(child: child!),
+      home: const StartScreen(),
       debugShowCheckedModeBanner: false,
     );
   }

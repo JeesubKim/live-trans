@@ -7,7 +7,14 @@ import 'settings_screen.dart';
 import '../widgets/global_toast.dart';
 
 class LiveCaptionScreen extends StatefulWidget {
-  const LiveCaptionScreen({super.key});
+  final String selectedLanguage;
+  final String selectedModel;
+  
+  const LiveCaptionScreen({
+    super.key,
+    required this.selectedLanguage,
+    required this.selectedModel,
+  });
 
   @override
   State<LiveCaptionScreen> createState() => _LiveCaptionScreenState();
@@ -33,8 +40,8 @@ class _LiveCaptionScreenState extends State<LiveCaptionScreen>
   bool _isListening = false;
   bool _isPaused = false;
   String _currentText = '';
-  String _selectedLanguage = 'English (US)';
-  String _selectedModel = 'Whisper Base';
+  late String _selectedLanguage;
+  late String _selectedModel;
   final List<String> _captionHistory = [];
   double _fontSize = 72.0;
   
@@ -54,6 +61,10 @@ class _LiveCaptionScreenState extends State<LiveCaptionScreen>
   @override
   void initState() {
     super.initState();
+    
+    // Initialize selected values from widget parameters
+    _selectedLanguage = widget.selectedLanguage;
+    _selectedModel = widget.selectedModel;
     
     // Set up blinking animation
     _blinkController = AnimationController(
@@ -604,8 +615,10 @@ class _LiveCaptionScreenState extends State<LiveCaptionScreen>
               style: TextStyle(
                 color: Colors.white38,
                 fontSize: 10,
-                height: 1.2,
+                height: 1.0,
               ),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
               textAlign: TextAlign.right,
             ),
           ),
@@ -635,7 +648,7 @@ class _LiveCaptionScreenState extends State<LiveCaptionScreen>
             children: [
               const SizedBox(width: 48), // Empty space to balance the layout
               const Text(
-                'Subtitify',
+                'SUBTITIFY',
                 style: TextStyle(
                   color: Colors.white,
                   fontSize: 20,
@@ -774,6 +787,10 @@ class _LiveCaptionScreenState extends State<LiveCaptionScreen>
                 setState(() {
                   _selectedLanguage = value!;
                 });
+                TOAST.sendMessage(
+                  MessageType.normal, 
+                  'Language changed to $_selectedLanguage'
+                );
                 _resetAutoHideTimer();
               },
             ),
@@ -806,11 +823,16 @@ class _LiveCaptionScreenState extends State<LiveCaptionScreen>
                 DropdownMenuItem(value: 'Whisper Small', child: Text('Whisper Small')),
                 DropdownMenuItem(value: 'Whisper Medium', child: Text('Whisper Medium')),
                 DropdownMenuItem(value: 'Whisper Large', child: Text('Whisper Large')),
+                DropdownMenuItem(value: 'Device Default', child: Text('Device Default')),
               ],
               onChanged: (value) {
                 setState(() {
                   _selectedModel = value!;
                 });
+                TOAST.sendMessage(
+                  MessageType.normal, 
+                  'STT model changed to $_selectedModel'
+                );
                 _resetAutoHideTimer();
               },
             ),
