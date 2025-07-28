@@ -64,7 +64,7 @@ class SttSettings {
   factory SttSettings.defaultSettings() {
     return SttSettings(
       language: SttLanguage.english,
-      model: SttModel.whisperBase,
+      model: SttModel.deviceDefault,
       autoStart: true,
       showTimestamp: true,
       confidenceThreshold: 0.5,
@@ -79,7 +79,7 @@ class SttSettings {
       ),
       model: SttModel.values.firstWhere(
         (e) => e.id == json['model'],
-        orElse: () => SttModel.whisperBase,
+        orElse: () => SttModel.deviceDefault,
       ),
       autoStart: json['autoStart'] as bool? ?? true,
       showTimestamp: json['showTimestamp'] as bool? ?? true,
@@ -214,8 +214,7 @@ class DisplaySettings {
 }
 
 enum SttLanguage {
-  english('en-US', 'English (US)'),
-  korean('ko-KR', 'Korean');
+  english('en-US', 'English (US)');
 
   const SttLanguage(this.code, this.displayName);
   final String code;
@@ -226,18 +225,6 @@ enum SttLanguage {
     switch (this) {
       case SttLanguage.english:
         return [
-          SttModel.whisperBase,
-          SttModel.whisperSmall,
-          SttModel.whisperMedium,
-          SttModel.whisperLarge,
-          SttModel.deviceDefault,
-        ];
-      case SttLanguage.korean:
-        return [
-          SttModel.whisperBase,
-          SttModel.whisperSmall,
-          SttModel.whisperMedium,
-          SttModel.whisperLarge,
           SttModel.deviceDefault,
         ];
     }
@@ -247,22 +234,14 @@ enum SttLanguage {
   SttModel get recommendedModel {
     switch (this) {
       case SttLanguage.english:
-        return SttModel.whisperMedium;
-      case SttLanguage.korean:
-        return SttModel.whisperMedium; // Good balance for Korean too
+        return SttModel.deviceDefault;
     }
   }
 }
 
 enum SttModel {
-  // OpenAI Whisper models (offline)
-  whisperBase('whisper-base', 'Whisper Base', SttProvider.openai, false),
-  whisperSmall('whisper-small', 'Whisper Small', SttProvider.openai, false),
-  whisperMedium('whisper-medium', 'Whisper Medium', SttProvider.openai, false),
-  whisperLarge('whisper-large', 'Whisper Large', SttProvider.openai, false),
-  
-  // Device default (offline)
-  deviceDefault('device-default', 'Device Default', SttProvider.device, false);
+  // Device default (offline) - Android STT Engine
+  deviceDefault('device-default', 'Android STT Engine', SttProvider.device, false);
 
   const SttModel(this.id, this.displayName, this.provider, this.requiresInternet);
   final String id;
@@ -274,26 +253,18 @@ enum SttModel {
   String get description {
     final internetInfo = requiresInternet ? '(Requires Internet)' : '(Offline)';
     switch (this) {
-      case SttModel.whisperBase:
-        return 'Fast, lightweight model - Good for real-time processing $internetInfo';
-      case SttModel.whisperSmall:
-        return 'Good balance of speed and accuracy - Recommended for most users $internetInfo';
-      case SttModel.whisperMedium:
-        return 'High accuracy, moderate speed - Best overall performance $internetInfo';
-      case SttModel.whisperLarge:
-        return 'Highest accuracy, slower processing - For maximum quality $internetInfo';
       case SttModel.deviceDefault:
-        return 'Uses system built-in speech recognition - Varies by device $internetInfo';
+        return 'Uses Android built-in speech recognition - Fast and reliable $internetInfo';
     }
   }
 
   /// Get model icon
   String get icon {
     switch (provider) {
-      case SttProvider.openai:
-        return '🤖'; // OpenAI Whisper icon
       case SttProvider.device:
-        return '📻'; // Device icon
+        return '📱'; // Android device icon
+      case SttProvider.openai:
+        return '🤖'; // OpenAI Whisper icon (unused now)
     }
   }
 }

@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:io';
 import 'dart:math' as math;
 import '../models/settings.dart';
 
@@ -91,7 +90,7 @@ class DefaultAudioRecorderService implements AudioRecorderService {
   final StreamController<RecorderStatus> _statusController = StreamController<RecorderStatus>.broadcast();
   
   RecorderStatus _status = RecorderStatus.uninitialized;
-  RecordingSettings? _settings;
+  // RecordingSettings? _settings; // Commented out to fix unused field warning
   Timer? _recordingTimer;
   Timer? _audioLevelTimer;
   DateTime? _recordingStartTime;
@@ -133,7 +132,7 @@ class DefaultAudioRecorderService implements AudioRecorderService {
   @override
   Future<void> initialize(RecordingSettings settings) async {
     _updateStatus(RecorderStatus.initializing);
-    _settings = settings;
+    // _settings = settings; // Commented out to fix unused field warning
     
     try {
       // Check permissions
@@ -230,7 +229,7 @@ class DefaultAudioRecorderService implements AudioRecorderService {
 
   @override
   Future<void> updateSettings(RecordingSettings settings) async {
-    _settings = settings;
+    // _settings = settings; // Commented out to fix unused field warning
     // TODO: Apply new settings to running recorder
   }
 

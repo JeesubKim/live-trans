@@ -1,10 +1,8 @@
 import 'dart:io';
-import 'dart:typed_data';
 import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
-import 'package:flutter/services.dart';
-import '../lib/widgets/subtitify_icon.dart';
+import '../lib/components/subtitify_icon_component.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -22,7 +20,6 @@ Future<void> main() async {
   );
 
   // Convert widget to image
-  final repaintBoundary = RepaintBoundary(child: iconWidget);
   final renderRepaintBoundary = RenderRepaintBoundary();
   final renderView = RenderView(
     child: renderRepaintBoundary,
@@ -64,6 +61,6 @@ Future<void> main() async {
   final file = File('assets/icon/app_icon.png');
   await file.writeAsBytes(uint8List);
 
-  print('App icon generated successfully at: ${file.path}');
-  print('Run: flutter packages pub run flutter_launcher_icons:main');
+  // App icon generated successfully at: ${file.path}
+  // Run: flutter packages pub run flutter_launcher_icons:main
 }

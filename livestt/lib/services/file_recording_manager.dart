@@ -1,9 +1,9 @@
 import 'dart:io';
 import 'package:path/path.dart' as path;
 import '../models/recording_file.dart';
+import '../utils/debug_logger.dart';
 
 class FileRecordingManager {
-  static const String _recordingsFolder = 'recordings';
   
   // Get the recordings directory path
   static String get recordingsPath {
@@ -48,7 +48,7 @@ class FileRecordingManager {
       final folderPath = path.join(recordingsPath, recordingId);
       return await RecordingFile.fromFolder(folderPath);
     } catch (e) {
-      print('Error loading recording $recordingId: $e');
+      DebugLogger.error('Error loading recording $recordingId: $e');
       return null;
     }
   }
@@ -115,7 +115,7 @@ class FileRecordingManager {
 
       return true;
     } catch (e) {
-      print('Error saving recording $recordingId: $e');
+      DebugLogger.error('Error saving recording $recordingId: $e');
       return false;
     }
   }
@@ -133,7 +133,7 @@ class FileRecordingManager {
       
       return false;
     } catch (e) {
-      print('Error deleting recording $recordingId: $e');
+      DebugLogger.error('Error deleting recording $recordingId: $e');
       return false;
     }
   }
@@ -146,7 +146,7 @@ class FileRecordingManager {
       
       return await recording.exportToTxt();
     } catch (e) {
-      print('Error exporting recording $recordingId to TXT: $e');
+      DebugLogger.error('Error exporting recording $recordingId to TXT: $e');
       return null;
     }
   }
@@ -159,7 +159,7 @@ class FileRecordingManager {
       
       return await recording.exportToCsv();
     } catch (e) {
-      print('Error exporting recording $recordingId to CSV: $e');
+      DebugLogger.error('Error exporting recording $recordingId to CSV: $e');
       return null;
     }
   }
@@ -183,7 +183,7 @@ class FileRecordingManager {
       await file.writeAsString(content);
       return true;
     } catch (e) {
-      print('Error saving exported file $fileName: $e');
+      DebugLogger.error('Error saving exported file $fileName: $e');
       return false;
     }
   }

@@ -1,7 +1,8 @@
 import 'package:flutter/material.dart';
 import 'dart:math' as math;
-import '../widgets/global_toast.dart';
-import '../services/file_recording_manager.dart';
+import '../../utils/global_toast.dart';
+import '../../services/file_recording_manager.dart';
+import '../../components/audio_waveform_component.dart';
 
 class RecordingDetailScreen extends StatefulWidget {
   final String sessionId;
@@ -151,8 +152,8 @@ class _RecordingDetailScreenState extends State<RecordingDetailScreen> {
 
   void _jumpToSearchResult(int resultIndex) {
     final searchResult = _searchResults[resultIndex];
-    final textIndex = searchResult['textIndex']!;
-    final matchIndex = searchResult['matchIndex']!;
+    // final textIndex = searchResult['textIndex']!; // Unused
+    // final matchIndex = searchResult['matchIndex']!; // Unused
     // This would scroll to the item and highlight it
     // Toast removed per user request
   }
@@ -303,7 +304,7 @@ class _RecordingDetailScreenState extends State<RecordingDetailScreen> {
             IconButton(
               icon: const Icon(Icons.share),
               onPressed: () {
-                TOAST.sendMessage(MessageType.normal, 'Stage 2: Share feature (UI only)');
+                toast.sendMessage(MessageType.normal, 'Stage 2: Share feature (UI only)');
               },
             ),
             IconButton(
@@ -359,7 +360,7 @@ class _RecordingDetailScreenState extends State<RecordingDetailScreen> {
                     setState(() {
                       _isPlaying = !_isPlaying;
                     });
-                    TOAST.sendMessage(MessageType.normal, 
+                    toast.sendMessage(MessageType.normal, 
                       _isPlaying ? 'Playing...' : 'Paused');
                   },
                   icon: Icon(_isPlaying ? Icons.pause : Icons.play_arrow, size: 32),
@@ -374,34 +375,15 @@ class _RecordingDetailScreenState extends State<RecordingDetailScreen> {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       // Waveform with drag capability
-                      GestureDetector(
-                        onTapDown: (details) {
-                          final RenderBox box = context.findRenderObject() as RenderBox;
-                          final localPosition = box.globalToLocal(details.globalPosition);
-                          final relativePosition = (localPosition.dx - 16 - 48 - 16) / (MediaQuery.of(context).size.width - 16 - 48 - 16 - 16);
+                      AudioWaveformComponent.playback(
+                        waveformData: _waveformData,
+                        progress: _currentPosition,
+                        isPlaying: _isPlaying,
+                        onSeek: (position) {
                           setState(() {
-                            _currentPosition = relativePosition.clamp(0.0, 1.0);
+                            _currentPosition = position;
                           });
                         },
-                        onPanUpdate: (details) {
-                          final RenderBox box = context.findRenderObject() as RenderBox;
-                          final localPosition = box.globalToLocal(details.globalPosition);
-                          final relativePosition = (localPosition.dx - 16 - 48 - 16) / (MediaQuery.of(context).size.width - 16 - 48 - 16 - 16);
-                          setState(() {
-                            _currentPosition = relativePosition.clamp(0.0, 1.0);
-                          });
-                        },
-                        child: Container(
-                          height: 40,
-                          child: CustomPaint(
-                            painter: PlaybackWaveformPainter(
-                              waveformData: _waveformData,
-                              progress: _currentPosition,
-                              isPlaying: _isPlaying,
-                            ),
-                            size: Size.infinite,
-                          ),
-                        ),
                       ),
                       const SizedBox(height: 4),
                       Row(
@@ -433,7 +415,7 @@ class _RecordingDetailScreenState extends State<RecordingDetailScreen> {
                   onTap: () {
                     // Use seconds from data object - whole card clickable
                     final seconds = textData['seconds'] as int;
-                    final timestamp = textData['timestamp']! as String;
+                    // final timestamp = textData['timestamp']! as String; // Unused
                     
                     setState(() {
                       _currentPosition = seconds / _totalDuration;
@@ -481,7 +463,7 @@ class _RecordingDetailScreenState extends State<RecordingDetailScreen> {
                           _CopyButton(
                             onTap: () {
                               // Stop propagation - only copy
-                              TOAST.sendMessage(MessageType.normal, 'Stage 2: Copy feature (UI only)');
+                              toast.sendMessage(MessageType.normal, 'Stage 2: Copy feature (UI only)');
                             },
                           ),
                         ],
@@ -546,7 +528,7 @@ class _RecordingDetailScreenState extends State<RecordingDetailScreen> {
         content = await FileRecordingManager.exportToCsv(widget.sessionId);
         fileName = '${widget.sessionId}.csv';
       } else {
-        TOAST.sendMessage(MessageType.fail, 'Invalid export format');
+        toast.sendMessage(MessageType.fail, 'Invalid export format');
         return;
       }
       
@@ -557,89 +539,23 @@ class _RecordingDetailScreenState extends State<RecordingDetailScreen> {
         );
         
         if (success) {
-          TOAST.sendMessage(MessageType.indicator, 
+          toast.sendMessage(MessageType.indicator, 
             'Exported to $fileName successfully');
         } else {
-          TOAST.sendMessage(MessageType.fail, 
+          toast.sendMessage(MessageType.fail, 
             'Failed to export $fileName');
         }
       } else {
-        TOAST.sendMessage(MessageType.fail, 
+        toast.sendMessage(MessageType.fail, 
           'Failed to generate export content');
       }
     } catch (e) {
-      TOAST.sendMessage(MessageType.fail, 
+      toast.sendMessage(MessageType.fail, 
         'Export error: $e');
     }
   }
 }
 
-// Playback waveform painter that extends the original functionality
-class PlaybackWaveformPainter extends CustomPainter {
-  final List<double> waveformData;
-  final double progress; // 0.0 to 1.0
-  final bool isPlaying;
-
-  PlaybackWaveformPainter({
-    required this.waveformData,
-    required this.progress,
-    required this.isPlaying,
-  });
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    if (waveformData.isEmpty) return;
-
-    final playedPaint = Paint()
-      ..color = Colors.blue
-      ..strokeWidth = 2.0
-      ..strokeCap = StrokeCap.round;
-
-    final unplayedPaint = Paint()
-      ..color = Colors.blue.withOpacity(0.3)
-      ..strokeWidth = 2.0
-      ..strokeCap = StrokeCap.round;
-
-    final progressLinePaint = Paint()
-      ..color = Colors.white
-      ..strokeWidth = 2.0;
-
-    final barWidth = size.width / waveformData.length;
-    final centerY = size.height / 2;
-    final progressX = progress * size.width;
-
-    // Draw waveform bars
-    for (int i = 0; i < waveformData.length; i++) {
-      final x = i * barWidth + barWidth / 2;
-      final barHeight = waveformData[i] * size.height * 0.8;
-      final startY = centerY - barHeight / 2;
-      final endY = centerY + barHeight / 2;
-
-      // Use played color if before progress line, unplayed color if after
-      final paint = x <= progressX ? playedPaint : unplayedPaint;
-
-      canvas.drawLine(
-        Offset(x, startY),
-        Offset(x, endY),
-        paint,
-      );
-    }
-
-    // Draw progress line
-    canvas.drawLine(
-      Offset(progressX, 0),
-      Offset(progressX, size.height),
-      progressLinePaint,
-    );
-  }
-
-  @override
-  bool shouldRepaint(PlaybackWaveformPainter oldDelegate) {
-    return oldDelegate.progress != progress || 
-           oldDelegate.isPlaying != isPlaying ||
-           oldDelegate.waveformData != waveformData;
-  }
-}
 
 // Copy button with touch feedback and larger touch area
 class _CopyButton extends StatefulWidget {

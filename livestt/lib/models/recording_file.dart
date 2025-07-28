@@ -1,5 +1,6 @@
 import 'dart:io';
 import 'package:path/path.dart' as path;
+import '../utils/debug_logger.dart';
 
 class RecordingFile {
   final String recordingId;
@@ -57,7 +58,7 @@ class RecordingFile {
         subtitles: subtitles,
       );
     } catch (e) {
-      print('Error loading recording from folder $folderPath: $e');
+      DebugLogger.error('Error loading recording from folder $folderPath: $e');
       return null;
     }
   }
@@ -102,7 +103,7 @@ class RecordingFile {
       
       return subtitles;
     } catch (e) {
-      print('Error parsing subtitle file $subtitlePath: $e');
+      DebugLogger.error('Error parsing subtitle file $subtitlePath: $e');
       return [];
     }
   }
@@ -117,7 +118,7 @@ class RecordingFile {
         return minutes * 60 + seconds;
       }
     } catch (e) {
-      print('Error parsing timestamp $timestamp: $e');
+      DebugLogger.error('Error parsing timestamp $timestamp: $e');
     }
     return 0;
   }

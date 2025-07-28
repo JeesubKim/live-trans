@@ -1,6 +1,10 @@
 import 'package:flutter/material.dart';
-import '../widgets/subtitify_icon.dart';
-import '../widgets/global_toast.dart';
+import '../../components/subtitify_icon_component.dart';
+import '../../utils/global_toast.dart';
+import '../../services/app_settings_service.dart';
+import '../../services/speech_to_text_service.dart';
+import '../../services/subtitle_display_manager.dart';
+import '../../utils/debug_logger.dart';
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
@@ -10,13 +14,31 @@ class SettingsScreen extends StatefulWidget {
 }
 
 class _SettingsScreenState extends State<SettingsScreen> {
+  final AppSettingsService _settings = AppSettingsService();
+  
   // 임시 설정 상태들
   bool _autoStart = true;
   bool _saveAudio = true;
   bool _showTimestamp = true;
+  bool _debugLogging = false;
   double _fontSize = 16.0;
   String _audioQuality = 'high';
   String _language = 'ko_KR';
+
+  @override
+  void initState() {
+    super.initState();
+    _loadSettings();
+  }
+
+  Future<void> _loadSettings() async {
+    await _settings.initialize();
+    setState(() {
+      _debugLogging = _settings.debugLoggingEnabled;
+      _fontSize = _settings.fontSize;
+      _language = _settings.selectedLanguage;
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -52,7 +74,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     setState(() {
                       _autoStart = value;
                     });
-                    TOAST.sendMessage(MessageType.indicator, 'Settings change (UI only)');
+                    globalToast.info('Settings change (UI only)');
                   },
                 ),
                 const Divider(height: 1),
@@ -133,6 +155,46 @@ class _SettingsScreenState extends State<SettingsScreen> {
           
           const SizedBox(height: 24),
           
+          // 디버그 설정 섹션
+          _buildSectionHeader('Developer Settings'),
+          Card(
+            child: Column(
+              children: [
+                SwitchListTile(
+                  secondary: const Icon(Icons.bug_report),
+                  title: const Text('Debug Logging'),
+                  subtitle: const Text('Show detailed logs in console (for developers)'),
+                  value: _debugLogging,
+                  onChanged: (value) async {
+                    setState(() {
+                      _debugLogging = value;
+                    });
+                    await _settings.setDebugLogging(value);
+                    globalToast.success(
+                      value ? 'Debug logging enabled' : 'Debug logging disabled'
+                    );
+                  },
+                ),
+                const Divider(height: 1),
+                ListTile(
+                  leading: const Icon(Icons.mic_none),
+                  title: const Text('Test Speech Recognition'),
+                  subtitle: const Text('Test if STT is working properly'),
+                  onTap: () => _testSpeechRecognition(),
+                ),
+                const Divider(height: 1),
+                ListTile(
+                  leading: const Icon(Icons.delete_sweep),
+                  title: const Text('Reset All Settings'),
+                  subtitle: const Text('Reset all settings to default values'),
+                  onTap: () => _showResetDialog(),
+                ),
+              ],
+            ),
+          ),
+          
+          const SizedBox(height: 24),
+          
           // 앱 정보 섹션
           _buildSectionHeader('App Info'),
           Card(
@@ -151,7 +213,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   leading: const Icon(Icons.help),
                   title: const Text('Help'),
                   onTap: () {
-                    TOAST.sendMessage(MessageType.normal, 'Help feature (UI only)');
+                    globalToast.normal('Help feature (UI only)');
                   },
                 ),
                 const Divider(height: 1),
@@ -159,7 +221,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   leading: const Icon(Icons.feedback),
                   title: const Text('Send Feedback'),
                   onTap: () {
-                    TOAST.sendMessage(MessageType.normal, 'Feedback feature (UI only)');
+                    globalToast.normal('Feedback feature (UI only)');
                   },
                 ),
               ],
@@ -373,6 +435,103 @@ class _SettingsScreenState extends State<SettingsScreen> {
       default:
         return quality;
     }
+  }
+
+  void _testSpeechRecognition() async {
+    try {
+      globalToast.normal('Testing speech recognition...');
+      
+      final sttService = SpeechToTextService();
+      final subtitleManager = SubtitleDisplayManager();
+      
+      // Initialize STT
+      final initialized = await sttService.initialize();
+      if (!initialized) {
+        globalToast.error('STT initialization failed');
+        return;
+      }
+      
+      // Show STT info
+      final capabilities = sttService.getCapabilities();
+      DebugLogger.info('STT Test - Capabilities: $capabilities');
+      
+      // Try to start listening for 5 seconds
+      final listening = await sttService.startListening(subtitleManager: subtitleManager);
+      if (listening) {
+        globalToast.success('STT test started - say something!');
+        
+        // Stop after 5 seconds
+        Future.delayed(const Duration(seconds: 5), () async {
+          await sttService.stopListening();
+          globalToast.normal('STT test completed');
+        });
+      } else {
+        globalToast.error('Failed to start STT test');
+      }
+      
+    } catch (e) {
+      DebugLogger.error('STT test error: $e');
+      globalToast.error('STT test error: $e');
+    }
+  }
+
+  void _showResetDialog() {
+    showGeneralDialog(
+      context: context,
+      barrierColor: Colors.black54,
+      transitionDuration: const Duration(milliseconds: 250),
+      transitionBuilder: (context, animation, secondaryAnimation, child) {
+        return ScaleTransition(
+          scale: Tween<double>(begin: 0.7, end: 1.0).animate(
+            CurvedAnimation(
+              parent: animation,
+              curve: Curves.easeOutQuart,
+              reverseCurve: Curves.easeInQuart,
+            ),
+          ),
+          child: FadeTransition(
+            opacity: animation,
+            child: child,
+          ),
+        );
+      },
+      pageBuilder: (context, animation, secondaryAnimation) => AlertDialog(
+        title: const Row(
+          children: [
+            Icon(Icons.warning, color: Colors.orange),
+            SizedBox(width: 8),
+            Text('Reset Settings'),
+          ],
+        ),
+        content: const Text(
+          'This will reset all settings to their default values. This action cannot be undone.\n\nAre you sure you want to continue?',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            onPressed: () async {
+              try {
+                await _settings.resetToDefaults();
+                await _loadSettings();
+                Navigator.pop(context);
+                globalToast.success('Settings reset to defaults');
+              } catch (e) {
+                Navigator.pop(context);
+                globalToast.error('Failed to reset settings');
+              }
+            },
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.orange,
+              foregroundColor: Colors.white,
+            ),
+            child: const Text('Reset'),
+          ),
+        ],
+      ),
+    );
   }
 }
 

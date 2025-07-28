@@ -1,16 +1,16 @@
 import 'package:flutter/material.dart';
 import 'recording_detail_screen.dart';
-import '../widgets/global_toast.dart';
-import '../services/file_recording_manager.dart';
+import '../../utils/global_toast.dart';
+import '../../services/file_recording_manager.dart';
 
-class RecordingsScreen extends StatefulWidget {
-  const RecordingsScreen({super.key});
+class RecordingFilesScreen extends StatefulWidget {
+  const RecordingFilesScreen({super.key});
 
   @override
-  State<RecordingsScreen> createState() => _RecordingsScreenState();
+  State<RecordingFilesScreen> createState() => _RecordingFilesScreenState();
 }
 
-class _RecordingsScreenState extends State<RecordingsScreen> {
+class _RecordingFilesScreenState extends State<RecordingFilesScreen> {
   final TextEditingController _searchController = TextEditingController();
   
   List<Map<String, dynamic>> _filteredSessions = [];
@@ -176,7 +176,7 @@ class _RecordingsScreenState extends State<RecordingsScreen> {
                                   message = 'Stage 2: $value feature (UI only)';
                               }
                               
-                              TOAST.sendMessage(type, message);
+                              toast.sendMessage(type, message);
                             },
                           ),
                           onTap: () {

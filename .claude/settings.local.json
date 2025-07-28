@@ -7,7 +7,8 @@
       "WebFetch(domain:pub.dev)",
       "WebFetch(domain:flutter-sound.canardoux.xyz)",
       "WebFetch(domain:stackoverflow.com)",
-      "Bash(dart tool/generate_app_icon.dart:*)"
+      "Bash(dart tool/generate_app_icon.dart:*)",
+      "Bash(mv:*)"
     ],
     "deny": []
   }

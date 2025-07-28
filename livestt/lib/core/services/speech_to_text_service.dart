@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:io';
 import '../models/caption.dart';
 import '../models/settings.dart';
 
@@ -90,20 +89,16 @@ enum SttErrorType {
 class SttServiceFactory {
   static SpeechToTextService createService(SttModel model) {
     switch (model) {
-      case SttModel.whisperBase:
-      case SttModel.whisperSmall:
-      case SttModel.whisperMedium:
-      case SttModel.whisperLarge:
-        return WhisperSttService();
+      case SttModel.deviceDefault:
+        return WhisperSttService(); // Using generic implementation
       default:
         throw UnsupportedError('STT model ${model.displayName} is not supported');
     }
   }
   
   static Future<List<SttModel>> getAvailableModels() async {
-    // For now, return all Whisper models
-    // In the future, check which models are actually available
-    return SttModel.values;
+    // Return only device default model
+    return [SttModel.deviceDefault];
   }
 }
 
@@ -203,13 +198,13 @@ class WhisperSttService implements SpeechToTextService {
   @override
   Future<bool> isLanguageSupported(SttLanguage language) async {
     // TODO: Check actual language support
-    return [SttLanguage.english, SttLanguage.korean].contains(language);
+    return [SttLanguage.english].contains(language);
   }
 
   @override
   Future<List<SttLanguage>> getAvailableLanguages() async {
     // TODO: Get actual available languages
-    return [SttLanguage.english, SttLanguage.korean];
+    return [SttLanguage.english];
   }
 
   @override

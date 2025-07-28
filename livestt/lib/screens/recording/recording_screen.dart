@@ -1,26 +1,35 @@
 import 'dart:async';
-import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'recordings_screen.dart';
-import 'settings_screen.dart';
-import '../widgets/global_toast.dart';
+import '../setting/settings_screen.dart';
+import '../../utils/global_toast.dart';
+import '../../services/subtitle_display_manager.dart';
+import '../../services/subtitle_file_manager.dart';
+import '../../services/app_settings_service.dart';
+import '../../services/audio_file_service.dart';
+import '../../core/models/settings.dart';
+import '../../utils/debug_logger.dart';
+import '../../components/subtitifying_component.dart';
+import '../../components/audio_waveform_component.dart';
+import '../../core/audio/audio_pipeline_factory.dart';
+import '../../core/audio/processors/waveform_visualizer.dart';
+import '../../core/audio/recorders/simple_stt_recorder.dart';
 
-class LiveCaptionScreen extends StatefulWidget {
+class RecordingScreen extends StatefulWidget {
   final String selectedLanguage;
   final String selectedModel;
   
-  const LiveCaptionScreen({
+  const RecordingScreen({
     super.key,
     required this.selectedLanguage,
     required this.selectedModel,
   });
 
   @override
-  State<LiveCaptionScreen> createState() => _LiveCaptionScreenState();
+  State<RecordingScreen> createState() => _RecordingScreenState();
 }
 
-class _LiveCaptionScreenState extends State<LiveCaptionScreen> 
+class _RecordingScreenState extends State<RecordingScreen> 
     with TickerProviderStateMixin {
   
   // Animation for blinking recording indicator
@@ -51,12 +60,31 @@ class _LiveCaptionScreenState extends State<LiveCaptionScreen>
   late AnimationController _fontPreviewController;
   late Animation<double> _fontPreviewAnimation;
   
+  // Audio pipeline
+  AudioPipeline? _audioPipeline;
+  StreamSubscription<WaveformData>? _waveformSubscription;
+  
   // Waveform and timer
   Duration _recordingDuration = Duration.zero;
   Timer? _recordingTimer;
-  Timer? _waveformTimer;
   List<double> _waveformData = [];
   final int _maxWaveformBars = 50; // Maximum number of bars to display
+  
+  // Services
+  late SubtitleDisplayManager _subtitleManager;
+  final SubtitleFileManager _fileManager = SubtitleFileManager();
+  final AppSettingsService _settings = AppSettingsService();
+  final AudioFileService _audioFileService = AudioFileService();
+  
+  // Subtitle streams
+  StreamSubscription<List<SubtitleItem>>? _historySubscription;
+  StreamSubscription<SubtitleItem?>? _currentSubscription;
+  StreamSubscription<String>? _realtimeSubscription;
+  
+  // Subtitle display data
+  SubtitleItem? _currentSubtitle;
+  String _realtimeSubtitle = '';
+  final ScrollController _subtitleScrollController = ScrollController();
   
   @override
   void initState() {
@@ -64,7 +92,12 @@ class _LiveCaptionScreenState extends State<LiveCaptionScreen>
     
     // Initialize selected values from widget parameters
     _selectedLanguage = widget.selectedLanguage;
-    _selectedModel = widget.selectedModel;
+    _selectedModel = 'Android STT Engine'; // Always use Android default
+    
+    // Initialize subtitle manager (will be replaced with STT's manager later)
+    _subtitleManager = SubtitleDisplayManager();
+    
+    DebugLogger.info('🔄 RecordingScreen initialized with language: $_selectedLanguage, model: $_selectedModel');
     
     // Set up blinking animation
     _blinkController = AnimationController(
@@ -112,26 +145,55 @@ class _LiveCaptionScreenState extends State<LiveCaptionScreen>
       curve: Curves.easeOut,
     ));
     
-    // Start recording automatically and start blinking
-    _isListening = true;
-    _blinkController.repeat(reverse: true);
-    
-    // Start recording timer and waveform simulation
-    _startRecordingTimer();
-    _startWaveformSimulation();
-    
+    // Initialize everything after widget is built
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _initializeAllServices();
+    });
   }
   
   @override
   void dispose() {
-    _blinkController.dispose();
-    _controlsController.dispose();
-    _fontPreviewController.dispose();
+    DebugLogger.info('🔄 Disposing RecordingScreen...');
+    _disposeAsync();
+    
+    // Cancel timers first
     _autoHideTimer?.cancel();
     _fontPreviewTimer?.cancel();
     _recordingTimer?.cancel();
-    _waveformTimer?.cancel();
+    
+    // Cancel new pipeline streams
+    _waveformSubscription?.cancel();
+    
+    // Dispose audio pipeline
+    _audioPipeline?.dispose();
+    
+    // Cancel subtitle streams
+    _historySubscription?.cancel();
+    _currentSubscription?.cancel();
+    _realtimeSubscription?.cancel();
+    
+    // Dispose services
+    _subtitleManager.dispose();
+    _audioFileService.dispose();
+    
+    // Dispose animations
+    _blinkController.dispose();
+    _controlsController.dispose();
+    _fontPreviewController.dispose();
+    
+    // Dispose ScrollController to prevent memory leaks
+    _subtitleScrollController.dispose();
+    
     super.dispose();
+  }
+  
+  // Async dispose for audio pipeline cleanup
+  Future<void> _disposeAsync() async {
+    try {
+      await _audioPipeline?.dispose();
+    } catch (e) {
+      DebugLogger.error('Error disposing audio pipeline: $e');
+    }
   }
   
   void _startAutoHideControls() {
@@ -196,26 +258,270 @@ class _LiveCaptionScreenState extends State<LiveCaptionScreen>
         setState(() {
           _recordingDuration = Duration(seconds: timer.tick);
         });
+      } else {
+        // Stop timer if not actively recording to save battery
+        timer.cancel();
       }
     });
   }
+
   
-  void _startWaveformSimulation() {
-    // Start timer to add new waveform data every 100ms (simulating real-time audio input)
-    _waveformTimer = Timer.periodic(const Duration(milliseconds: 100), (timer) {
-      if (mounted && _isListening && !_isPaused) {
-        setState(() {
-          // Add new random value to simulate incoming audio level
-          final newValue = math.Random().nextDouble() * 0.8 + 0.2; // Values between 0.2 and 1.0
-          _waveformData.add(newValue);
-          
-          // Keep only the latest bars (sliding window effect)
-          if (_waveformData.length > _maxWaveformBars) {
-            _waveformData.removeAt(0);
+  // Initialize and start audio pipeline
+  Future<void> _initializeAudioPipeline() async {
+    try {
+      // Create STT-based audio pipeline
+      _audioPipeline = await AudioPipelineFactory.createSTTPipeline();
+      
+      // CRITICAL: Get the SubtitleDisplayManager from SimpleSttRecorder
+      final recorder = _audioPipeline!.recorder;
+      if (recorder is SimpleSttRecorder) {
+        // Replace our SubtitleDisplayManager with the one from STT
+        _subtitleManager.dispose(); // Dispose old one
+        _subtitleManager = recorder.subtitleManager; // Use STT's manager
+        DebugLogger.info('🔗 Connected to STT SubtitleDisplayManager');
+      }
+      
+      // Subscribe to waveform data from pipeline
+      _waveformSubscription = _audioPipeline!.waveformVisualizer.waveformStream.listen(
+        (waveformData) {
+          if (mounted) {
+            setState(() {
+              _waveformData = waveformData.amplitudes;
+            });
           }
+        },
+        onError: (error) {
+          DebugLogger.error('Waveform stream error: $error');
+        },
+      );
+      
+      // Subscribe to subtitle streams (now using STT's SubtitleDisplayManager)
+      _subscribeToSubtitles();
+      
+      // Start the pipeline
+      await _audioPipeline!.start();
+      
+      setState(() {
+        _isListening = true;
+      });
+      
+      _blinkController.repeat(reverse: true);
+      _startRecordingTimer();
+      
+      DebugLogger.info('Audio pipeline initialized and started');
+    } catch (e) {
+      DebugLogger.error('Error initializing audio pipeline: $e');
+      setState(() {
+        _isListening = false;
+      });
+      rethrow;
+    }
+  }
+
+
+  // Subscribe to subtitle streams from SubtitleDisplayManager
+  void _subscribeToSubtitles() {
+    // Subscribe to subtitle history
+    _historySubscription = _subtitleManager.historyStream.listen(
+      (history) {
+        if (mounted) {
+          // History is now managed by SubtitleDisplayManager
+          DebugLogger.info('Subtitle history updated: ${history.length} items');
+        }
+      },
+      onError: (error) {
+        DebugLogger.error('Subtitle history stream error: $error');
+      },
+    );
+
+    // Subscribe to current subtitle (confirmed text replaces realtime display)
+    _currentSubscription = _subtitleManager.currentStream.listen(
+      (current) {
+        if (mounted) {
+          setState(() {
+            _currentSubtitle = current;
+            // When text is confirmed, replace realtime display with confirmed text
+            if (current != null && current.text.isNotEmpty) {
+              _realtimeSubtitle = current.text;
+            }
+          });
+          DebugLogger.info('🖥️ UI Current subtitle confirmed, replacing realtime display: "${current?.text ?? "null"}"');
+          
+          // Auto-scroll to bottom to show latest subtitle
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (_subtitleScrollController.hasClients) {
+              _subtitleScrollController.animateTo(
+                _subtitleScrollController.position.maxScrollExtent,
+                duration: const Duration(milliseconds: 300),
+                curve: Curves.easeOut,
+              );
+            }
+          });
+        } else {
+          DebugLogger.warning('⚠️ UI not mounted, skipping current update: "${current?.text ?? "null"}"');
+        }
+      },
+      onError: (error) {
+        DebugLogger.error('Current subtitle stream error: $error');
+      },
+    );
+
+    // Subscribe to realtime text
+    _realtimeSubscription = _subtitleManager.realtimeStream.listen(
+      (realtime) {
+        if (mounted) {
+          setState(() {
+            _realtimeSubtitle = realtime;
+          });
+          DebugLogger.info('🖥️ UI Realtime subtitle updated: "$realtime"');
+          
+          // Auto-scroll to bottom to show latest realtime text
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (_subtitleScrollController.hasClients) {
+              _subtitleScrollController.animateTo(
+                _subtitleScrollController.position.maxScrollExtent,
+                duration: const Duration(milliseconds: 300),
+                curve: Curves.easeOut,
+              );
+            }
+          });
+        } else {
+          DebugLogger.warning('⚠️ UI not mounted, skipping realtime update: "$realtime"');
+        }
+      },
+      onError: (error) {
+        DebugLogger.error('Realtime subtitle stream error: $error');
+      },
+    );
+  }
+
+  // Update subtitle configuration based on orientation
+  void _updateSubtitleConfiguration() {
+    final orientation = MediaQuery.of(context).orientation;
+    final size = MediaQuery.of(context).size;
+    _subtitleManager.updateConfiguration(
+      orientation: orientation,
+      screenSize: size,
+    );
+  }
+
+  // Initialize all services in proper order
+  Future<void> _initializeAllServices() async {
+    try {
+      DebugLogger.info('🚀 Starting service initialization...');
+      
+      // 1. Initialize settings first
+      try {
+        await _initializeSettings();
+      } catch (e) {
+        DebugLogger.warning('⚠️ Settings initialization failed, using defaults: $e');
+        // Continue with defaults if settings fail
+      }
+      
+      // 2. Initialize audio file service
+      try {
+        await _audioFileService.initialize();
+      } catch (e) {
+        DebugLogger.warning('⚠️ Audio file service initialization failed: $e');
+        globalToast.warning('File saving may not work properly');
+        // Continue without file service
+      }
+      
+      // 3. Initialize and start audio pipeline
+      await _initializeAudioPipeline();
+      
+      DebugLogger.info('✅ All services initialized successfully');
+    } catch (e) {
+      DebugLogger.error('❌ Critical error initializing services: $e');
+      
+      // Reset listening state on critical error
+      if (mounted) {
+        setState(() {
+          _isListening = false;
+          _isPaused = false;
         });
       }
-    });
+      
+      // Show user-friendly error message
+      String userMessage = _getUserFriendlyInitError(e.toString());
+      globalToast.error(userMessage);
+    }
+  }
+  
+  // Convert technical initialization errors to user-friendly messages
+  String _getUserFriendlyInitError(String error) {
+    if (error.contains('permission')) {
+      return 'Microphone permission required. Please grant permission and try again.';
+    } else if (error.contains('network') || error.contains('internet')) {
+      return 'Network connection required for speech recognition. Please check your internet.';
+    } else if (error.contains('speech') || error.contains('STT')) {
+      return 'Speech recognition service unavailable. Please restart the app.';
+    } else {
+      return 'Initialization failed. Please restart the app and try again.';
+    }
+  }
+
+  // Initialize settings service
+  Future<void> _initializeSettings() async {
+    try {
+      await _settings.initialize();
+      DebugLogger.info('Settings service initialized');
+    } catch (e) {
+      DebugLogger.error('Error initializing settings: $e');
+    }
+  }
+
+
+
+
+
+
+
+
+  // Stop audio pipeline recording
+  Future<void> _stopRecording() async {
+    try {
+      // Stop the audio pipeline
+      await _audioPipeline?.stop();
+      
+      setState(() {
+        _isListening = false;
+        _isPaused = false;
+      });
+      
+      _blinkController.stop();
+      _recordingTimer?.cancel();
+      _historySubscription?.cancel();
+      _currentSubscription?.cancel();
+      _realtimeSubscription?.cancel();
+      
+      // Generate unique session ID for linking audio and subtitles
+      final sessionId = DateTime.now().millisecondsSinceEpoch.toString();
+      
+      // Save subtitle file with current session data
+      final subtitleHistory = _subtitleManager.getFullHistory();
+      if (subtitleHistory.isNotEmpty) {
+        final fileName = await _fileManager.saveSubtitleFile(
+          title: 'Recording_$sessionId',
+          category: 'Recording',
+          language: _selectedLanguage,
+          model: _selectedModel,
+          subtitles: subtitleHistory,
+          duration: _recordingDuration,
+        );
+        
+        if (fileName.isNotEmpty) {
+          DebugLogger.info('📝 Subtitle file saved: $fileName');
+          final subtitleCount = subtitleHistory.length;
+          globalToast.success('Recording saved ($subtitleCount subtitles)');
+        }
+      } else {
+        globalToast.success('Recording stopped');
+      }
+    } catch (e) {
+      DebugLogger.error('Error stopping recording: $e');
+      globalToast.error('Stop recording error: $e');
+    }
   }
   
   String _formatDuration(Duration duration) {
@@ -225,6 +531,7 @@ class _LiveCaptionScreenState extends State<LiveCaptionScreen>
     String seconds = twoDigits(duration.inSeconds.remainder(60));
     return duration.inHours > 0 ? '$hours:$minutes:$seconds' : '$minutes:$seconds';
   }
+  
   
   void _hideControls() {
     _autoHideTimer?.cancel();
@@ -238,49 +545,39 @@ class _LiveCaptionScreenState extends State<LiveCaptionScreen>
   }
   
   void _toggleListening() {
-    setState(() {
-      if (_isListening) {
-        // When stopping, pause and show save dialog
-        _isPaused = true;
-        _blinkController.stop();
-        _waveformTimer?.cancel();
-        if (_currentText.isNotEmpty) {
-          _captionHistory.add(_currentText);
-          _currentText = '';
-        }
-        // Show save dialog when stopping
-        _showSaveDialog();
-      } else {
-        // When starting
-        _isListening = true;
-        _isPaused = false;
-        _blinkController.repeat(reverse: true);
-        _startWaveformSimulation();
-        // Simulate speech recognition with sample text after a delay
-        Future.delayed(const Duration(seconds: 2), () {
-          if (mounted && _isListening && !_isPaused) {
-            setState(() {
-              _currentText = 'This is a sample caption text for demonstration...';
-            });
-          }
-        });
-      }
-    });
+    if (_isListening) {
+      // When stopping, show save dialog
+      _stopRecording();
+      
+      // Get full history for saving
+      final fullHistory = _subtitleManager.getFullHistory();
+      _captionHistory.clear();
+      _captionHistory.addAll(fullHistory.map((item) => item.text));
+      // Show save dialog when stopping
+      _showSaveDialog();
+    } else {
+      // When starting, reinitialize the pipeline
+      _subtitleManager.clearAll();
+      _initializeAudioPipeline();
+    }
   }
   
-  void _togglePause() {
-    setState(() {
-      _isPaused = !_isPaused;
-      if (_isPaused) {
-        _blinkController.stop();
-        _waveformTimer?.cancel();
-      } else {
-        if (_isListening) {
-          _blinkController.repeat(reverse: true);
-          _startWaveformSimulation();
-        }
-      }
-    });
+  void _togglePause() async {
+    if (_isPaused) {
+      // Resume recording - restart the pipeline
+      await _audioPipeline?.start();
+      setState(() {
+        _isPaused = false;
+      });
+      _blinkController.repeat(reverse: true);
+    } else {
+      // Pause recording - stop the pipeline
+      await _audioPipeline?.stop();
+      setState(() {
+        _isPaused = true;
+      });
+      _blinkController.stop();
+    }
     _resetAutoHideTimer();
   }
   
@@ -311,9 +608,33 @@ class _LiveCaptionScreenState extends State<LiveCaptionScreen>
       pageBuilder: (context, animation, secondaryAnimation) => _SaveRecordingDialog(
         defaultTitle: defaultTitle,
         captionHistory: _captionHistory,
-        onSave: (title, category) {
-          // Handle save logic here
-          TOAST.sendMessage(MessageType.success, 'Recording saved as: $title');
+        onSave: (title, category) async {
+          try {
+            // Get full subtitle history from manager
+            final fullHistory = _subtitleManager.getFullHistory();
+            
+            if (fullHistory.isEmpty) {
+              globalToast.error('No subtitles to save');
+              return;
+            }
+            
+            // Save subtitle file
+            final filePath = await _fileManager.saveSubtitleFile(
+              title: title,
+              category: category,
+              language: _selectedLanguage,
+              model: _selectedModel,
+              subtitles: fullHistory,
+              duration: _recordingDuration,
+            );
+            
+            globalToast.success('Recording saved: $title');
+            DebugLogger.info('Subtitle file saved to: $filePath');
+            
+          } catch (e) {
+            DebugLogger.error('Error saving subtitle file: $e');
+            globalToast.error('Failed to save recording');
+          }
         },
         onDiscard: () {
           _showDiscardConfirmation();
@@ -360,7 +681,7 @@ class _LiveCaptionScreenState extends State<LiveCaptionScreen>
           });
           // Close all dialogs and go back to start screen
           Navigator.of(context).popUntil((route) => route.isFirst);
-          TOAST.sendMessage(MessageType.success, 'Recording discarded');
+          globalToast.success('Recording discarded');
         },
       ),
     );
@@ -368,14 +689,13 @@ class _LiveCaptionScreenState extends State<LiveCaptionScreen>
 
   @override
   Widget build(BuildContext context) {
-    return WillPopScope(
-      onWillPop: () async {
+    return PopScope(
+      canPop: !_isListening,
+      onPopInvoked: (didPop) {
         // Handle back button like Stop button
-        if (_isListening) {
+        if (!didPop && _isListening) {
           _toggleListening();
-          return false; // Don't pop immediately, let save dialog handle it
         }
-        return true; // Allow normal back navigation if not listening
       },
       child: Scaffold(
         backgroundColor: Colors.black,
@@ -406,65 +726,22 @@ class _LiveCaptionScreenState extends State<LiveCaptionScreen>
                   top: MediaQuery.of(context).padding.top + 20,
                   left: 20,
                   right: 180, // Leave space for Subtitifying indicator (approx 140px) + margin
-                  child: _buildWaveformTimer(),
+                  child: AudioWaveformComponent.recording(
+                    recordingDuration: _recordingDuration,
+                    waveformData: _waveformData,
+                    maxWaveformBars: _maxWaveformBars,
+                    isPaused: _isPaused,
+                  ),
                 ),
               
               // Top recording indicator (always visible)
               Positioned(
                 top: MediaQuery.of(context).padding.top + 20,
                 right: 20,
-                child: AnimatedBuilder(
-                  animation: _blinkAnimation,
-                  builder: (context, child) {
-                    return Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                      decoration: BoxDecoration(
-                        color: _isListening && !_isPaused
-                            ? Colors.red.withOpacity(_blinkAnimation.value * 0.3 + 0.1)
-                            : Colors.black87,
-                        borderRadius: BorderRadius.circular(20),
-                        border: Border.all(
-                          color: _isListening && !_isPaused ? Colors.red.withOpacity(_blinkAnimation.value) : Colors.grey,
-                          width: _isListening && !_isPaused ? 2 : 1,
-                        ),
-                      ),
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Icon(
-                            Icons.record_voice_over,
-                            color: _isListening && !_isPaused ? Colors.red.withOpacity(_blinkAnimation.value) : Colors.grey,
-                            size: 16,
-                          ),
-                          const SizedBox(width: 6),
-                          AnimatedBuilder(
-                            animation: _blinkAnimation,
-                            builder: (context, child) {
-                              return Text(
-                                _isListening && !_isPaused ? 'Subtitifying' : 'Subtitify',
-                                style: TextStyle(
-                                  color: _isListening && !_isPaused 
-                                      ? Colors.white.withOpacity(_blinkAnimation.value)
-                                      : Colors.grey,
-                                  fontSize: 12,
-                                  fontWeight: FontWeight.bold,
-                                ),
-                              );
-                            },
-                          ),
-                          const SizedBox(width: 6),
-                          Container(
-                            width: 8,
-                            height: 8,
-                            decoration: BoxDecoration(
-                              color: _isListening && !_isPaused ? Colors.red.withOpacity(_blinkAnimation.value) : Colors.grey,
-                              shape: BoxShape.circle,
-                            ),
-                          ),
-                        ],
-                      ),
-                    );
-                  },
+                child: SubtitifyingComponent(
+                  isListening: _isListening,
+                  isPaused: _isPaused,
+                  blinkAnimation: _blinkAnimation,
                 ),
               ),
               
@@ -525,79 +802,54 @@ class _LiveCaptionScreenState extends State<LiveCaptionScreen>
         ],
         ),
         
-        // Current caption or font preview (centered)
-        if (_currentText.isNotEmpty || _showFontPreview)
-          Center(
-            child: Container(
-              margin: const EdgeInsets.symmetric(horizontal: 20),
-              child: AnimatedBuilder(
-                animation: _fontPreviewAnimation,
-                builder: (context, child) {
-                  return Text(
-                    _currentText.isNotEmpty ? _currentText : 'Subtitify...',
-                    style: TextStyle(
-                      color: _currentText.isNotEmpty 
-                          ? Colors.white 
-                          : Colors.white70,
-                      fontSize: baseFontSize,
-                      fontWeight: FontWeight.w500,
-                      height: 0.9,
-                      shadows: const [
-                        Shadow(
-                          offset: Offset(1, 1),
-                          blurRadius: 3,
-                          color: Colors.black,
+        // Current subtitle display (centered) - simplified, no history
+        Center(
+          child: Container(
+            margin: const EdgeInsets.symmetric(horizontal: 20),
+            constraints: BoxConstraints(
+              maxHeight: MediaQuery.of(context).size.height * 0.6, // Max 60% of screen height
+            ),
+            child: SingleChildScrollView(
+              controller: _subtitleScrollController,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                // Realtime text (being typed) - main subtitle with enhanced styling
+                if (_realtimeSubtitle.isNotEmpty || _showFontPreview)
+                  AnimatedBuilder(
+                    animation: _fontPreviewAnimation,
+                    builder: (context, child) {
+                      return AnimatedContainer(
+                        duration: const Duration(milliseconds: 200),
+                        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+                        decoration: BoxDecoration(
+                          color: _realtimeSubtitle.isNotEmpty 
+                              ? Colors.black.withOpacity(0.4)
+                              : Colors.black.withOpacity(0.2),
+                          borderRadius: BorderRadius.circular(12),
                         ),
-                      ],
-                    ),
-                    textAlign: TextAlign.center,
-                  );
-                },
-              ),
-            ),
-          ),
-        
-        // Caption history
-        if (_captionHistory.isNotEmpty)
-          Positioned(
-            bottom: 100,
-            left: 20,
-            right: 20,
-            child: Container(
-              height: isLandscape ? 150 : 100,
-              child: ListView.builder(
-                reverse: true,
-                itemCount: _captionHistory.length,
-                itemBuilder: (context, index) {
-                  final reversedIndex = _captionHistory.length - 1 - index;
-                  return Container(
-                    margin: const EdgeInsets.only(bottom: 8),
-                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-                    decoration: BoxDecoration(
-                      color: Colors.black54,
-                      borderRadius: BorderRadius.circular(6),
-                    ),
-                    child: Text(
-                      _captionHistory[reversedIndex],
-                      style: TextStyle(
-                        color: Colors.white70,
-                        fontSize: baseFontSize * 0.8,
-                        height: 1.3,
-                        shadows: const [
-                          Shadow(
-                            offset: Offset(1, 1),
-                            blurRadius: 2,
-                            color: Colors.black,
+                        child: Text(
+                          _realtimeSubtitle.isNotEmpty ? _realtimeSubtitle : 'Subtitify...',
+                          style: TextStyle(
+                            color: _realtimeSubtitle.isNotEmpty 
+                                ? Colors.white
+                                : Colors.white.withOpacity(_fontPreviewAnimation.value),
+                            fontSize: baseFontSize,
+                            fontWeight: FontWeight.w500,
+                            height: 1.3,
+                            letterSpacing: 0.3,
                           ),
-                        ],
-                      ),
-                      textAlign: TextAlign.center,
-                    ),
-                  );
-                },
+                          textAlign: TextAlign.center,
+                        ),
+                      );
+                    },
+                  ),
+                ],
               ),
             ),
           ),
+        ),
+        
         
         // Status text below Subtitify indicator
         Positioned(
@@ -612,7 +864,7 @@ class _LiveCaptionScreenState extends State<LiveCaptionScreen>
                 : _isListening 
                   ? 'Subtitifying - Tap screen for controls'
                   : 'Tap screen for controls',
-              style: TextStyle(
+              style: const TextStyle(
                 color: Colors.white38,
                 fontSize: 10,
                 height: 1.0,
@@ -779,19 +1031,22 @@ class _LiveCaptionScreenState extends State<LiveCaptionScreen>
               style: const TextStyle(color: Colors.white),
               underline: Container(),
               isExpanded: true,
-              items: const [
-                DropdownMenuItem(value: 'English (US)', child: Text('English (US)')),
-                DropdownMenuItem(value: 'Korean', child: Text('Korean')),
-              ],
-              onChanged: (value) {
-                setState(() {
-                  _selectedLanguage = value!;
-                });
-                TOAST.sendMessage(
-                  MessageType.normal, 
-                  'Language changed to $_selectedLanguage'
-                );
-                _resetAutoHideTimer();
+              items: SttLanguage.values.map((lang) => 
+                DropdownMenuItem(value: lang.displayName, child: Text(lang.displayName))
+              ).toList(),
+              onChanged: (value) async {
+                if (value != null) {
+                  setState(() {
+                    _selectedLanguage = value;
+                  });
+                  
+                  // Save to settings
+                  final settings = AppSettingsService();
+                  await settings.setSelectedLanguage(value);
+                  
+                  globalToast.normal('Language changed to $_selectedLanguage');
+                  _resetAutoHideTimer();
+                }
               },
             ),
           ),
@@ -819,18 +1074,14 @@ class _LiveCaptionScreenState extends State<LiveCaptionScreen>
               underline: Container(),
               isExpanded: true,
               items: const [
-                DropdownMenuItem(value: 'Whisper Base', child: Text('Whisper Base')),
-                DropdownMenuItem(value: 'Whisper Small', child: Text('Whisper Small')),
-                DropdownMenuItem(value: 'Whisper Medium', child: Text('Whisper Medium')),
-                DropdownMenuItem(value: 'Whisper Large', child: Text('Whisper Large')),
-                DropdownMenuItem(value: 'Device Default', child: Text('Device Default')),
+                DropdownMenuItem(value: 'Android STT Engine', child: Text('Android STT Engine')),
+                DropdownMenuItem(value: 'Device Default', child: Text('Device Default (Same as above)')),
               ],
               onChanged: (value) {
                 setState(() {
                   _selectedModel = value!;
                 });
-                TOAST.sendMessage(
-                  MessageType.normal, 
+                globalToast.normal(
                   'STT model changed to $_selectedModel'
                 );
                 _resetAutoHideTimer();
@@ -934,6 +1185,7 @@ class _LiveCaptionScreenState extends State<LiveCaptionScreen>
     );
   }
   
+  
   Widget _buildControlButton({
     required IconData icon,
     required String label,
@@ -979,55 +1231,13 @@ class _LiveCaptionScreenState extends State<LiveCaptionScreen>
     );
   }
   
-  Widget _buildWaveformTimer() {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8), // Same padding as Subtitifying
-      decoration: BoxDecoration(
-        color: Colors.black87,
-        borderRadius: BorderRadius.circular(20),
-        border: Border.all(
-          color: _isListening && !_isPaused ? Colors.blue.withOpacity(0.3) : Colors.blue.withOpacity(0.2), 
-          width: 2, // Same thickness as Subtitifying indicator
-        ),
-      ),
-      child: Row(
-        children: [
-          // Timer
-          Text(
-            _formatDuration(_recordingDuration),
-            style: const TextStyle(
-              color: Colors.white,
-              fontSize: 12,
-              fontWeight: FontWeight.bold,
-              fontFamily: 'monospace',
-            ),
-          ),
-          const SizedBox(width: 12),
-          // Waveform (flatter and wider)
-          Expanded(
-            child: SizedBox(
-              height: 14, // Reduced from 20 to make it flatter
-              child: CustomPaint(
-                painter: WaveformPainter(
-                  waveformData: _waveformData,
-                  maxBars: _maxWaveformBars,
-                  isPaused: _isPaused,
-                ),
-                size: const Size.fromHeight(14),
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
 }
 
 // Save Recording Dialog
 class _SaveRecordingDialog extends StatefulWidget {
   final String defaultTitle;
   final List<String> captionHistory;
-  final Function(String title, String category) onSave;
+  final Future<void> Function(String title, String category) onSave;
   final VoidCallback onDiscard;
   final VoidCallback onResume;
   final BuildContext context;
@@ -1237,10 +1447,17 @@ class _SaveRecordingDialogState extends State<_SaveRecordingDialog> {
                     const SizedBox(width: 16),
                     Expanded(
                       child: ElevatedButton(
-                        onPressed: () {
-                          widget.onSave(_titleController.text, _selectedCategory);
-                          // Go back to main screen (StartScreen)
-                          Navigator.of(context).popUntil((route) => route.isFirst);
+                        onPressed: () async {
+                          try {
+                            await widget.onSave(_titleController.text, _selectedCategory);
+                            // Go back to main screen (StartScreen)
+                            if (mounted) {
+                              Navigator.of(context).popUntil((route) => route.isFirst);
+                            }
+                          } catch (e) {
+                            // Error handling is done in the onSave callback
+                            DebugLogger.error('Save dialog error: $e');
+                          }
                         },
                         style: ElevatedButton.styleFrom(
                           backgroundColor: Colors.blue,
@@ -1276,7 +1493,6 @@ class _DiscardConfirmationDialog extends StatefulWidget {
 class _DiscardConfirmationDialogState extends State<_DiscardConfirmationDialog> 
     with TickerProviderStateMixin {
   double _slideValue = 0.0;
-  bool _isSliding = false;
   bool _isFullySlided = false;
   late AnimationController _colorController;
   late Animation<double> _colorAnimation;
@@ -1387,9 +1603,7 @@ class _DiscardConfirmationDialogState extends State<_DiscardConfirmationDialog>
                         width: (_slideValue + 52).clamp(0, constraints.maxWidth - 8),
                         child: GestureDetector(
                           onPanStart: (_) {
-                            setState(() {
-                              _isSliding = true;
-                            });
+                            // Start sliding
                           },
                           onPanUpdate: (details) {
                             setState(() {
@@ -1412,8 +1626,6 @@ class _DiscardConfirmationDialogState extends State<_DiscardConfirmationDialog>
                           },
                           onPanEnd: (_) {
                             setState(() {
-                              _isSliding = false;
-                              
                               // If fully slided when touch is released, execute delete
                               if (_isFullySlided) {
                                 widget.onConfirm();
@@ -1436,8 +1648,8 @@ class _DiscardConfirmationDialogState extends State<_DiscardConfirmationDialog>
                                 child: Row(
                                   mainAxisAlignment: MainAxisAlignment.end,
                                   children: [
-                                    Padding(
-                                      padding: const EdgeInsets.only(right: 16),
+                                    const Padding(
+                                      padding: EdgeInsets.only(right: 16),
                                       child: Icon(
                                         Icons.delete,
                                         color: Colors.white,
@@ -1479,73 +1691,3 @@ class _DiscardConfirmationDialogState extends State<_DiscardConfirmationDialog>
   }
 }
 
-// Waveform painter with real-time scrolling effect
-class WaveformPainter extends CustomPainter {
-  final List<double> waveformData;
-  final int maxBars;
-  final bool isPaused;
-
-  WaveformPainter({
-    required this.waveformData,
-    required this.maxBars,
-    required this.isPaused,
-  });
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    if (waveformData.isEmpty) return;
-
-    final activePaint = Paint()
-      ..color = isPaused ? Colors.grey.withOpacity(0.4) : Colors.blue
-      ..strokeWidth = 2.0
-      ..strokeCap = StrokeCap.round;
-
-    final inactivePaint = Paint()
-      ..color = isPaused ? Colors.grey.withOpacity(0.2) : Colors.blue.withOpacity(0.3)
-      ..strokeWidth = 2.0
-      ..strokeCap = StrokeCap.round;
-
-    final barWidth = size.width / maxBars;
-    final centerY = size.height / 2;
-
-    // Calculate starting position to align data to the right
-    final dataLength = waveformData.length;
-    final startIndex = (maxBars - dataLength).clamp(0, maxBars);
-
-    // Draw inactive bars for empty positions (left side)
-    for (int i = 0; i < startIndex; i++) {
-      final x = i * barWidth + barWidth / 2;
-      final barHeight = 0.1 * size.height; // Minimal height for empty bars
-      final startY = centerY - barHeight / 2;
-      final endY = centerY + barHeight / 2;
-
-      canvas.drawLine(
-        Offset(x, startY),
-        Offset(x, endY),
-        inactivePaint,
-      );
-    }
-
-    // Draw actual waveform data (right side, most recent)
-    for (int i = 0; i < dataLength; i++) {
-      final barIndex = startIndex + i;
-      final x = barIndex * barWidth + barWidth / 2;
-      final barHeight = waveformData[i] * size.height * 0.8; // Scale down slightly
-      final startY = centerY - barHeight / 2;
-      final endY = centerY + barHeight / 2;
-
-      // Most recent bars (rightmost) are brighter
-      final isRecent = i >= dataLength - 5; // Last 5 bars are "active"
-      final currentPaint = isRecent ? activePaint : inactivePaint;
-
-      canvas.drawLine(
-        Offset(x, startY),
-        Offset(x, endY),
-        currentPaint,
-      );
-    }
-  }
-
-  @override
-  bool shouldRepaint(CustomPainter oldDelegate) => true;
-}

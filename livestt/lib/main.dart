@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'screens/start_screen.dart';
-import 'widgets/global_toast.dart';
+import 'screens/main/main_screen.dart';
+import 'utils/global_toast.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();

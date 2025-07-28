@@ -1,9 +1,12 @@
 import 'package:flutter/material.dart';
-import 'live_caption_screen.dart';
-import 'recordings_screen.dart';
-import '../widgets/subtitify_icon.dart';
-import '../widgets/global_toast.dart';
-import '../core/core.dart';
+import '../recording/recording_screen.dart';
+import '../recording/recording_files_screen.dart';
+import '../../components/subtitify_icon_component.dart';
+import '../../components/select_component.dart';
+import '../../utils/global_toast.dart';
+import '../../core/core.dart';
+import '../../services/app_settings_service.dart';
+import '../../utils/debug_logger.dart';
 
 class StartScreen extends StatefulWidget {
   const StartScreen({super.key});
@@ -15,23 +18,43 @@ class StartScreen extends StatefulWidget {
 class _StartScreenState extends State<StartScreen> {
   SttLanguage _selectedLanguage = SttLanguage.english;
   SttModel? _selectedModel;
+  bool _isCheckingLanguagePack = false;
 
   @override
   void initState() {
     super.initState();
-    // Set default model based on selected language
-    _selectedModel = _selectedLanguage.recommendedModel;
+    _loadSettingsAndSetDefaults();
+  }
+  
+  Future<void> _loadSettingsAndSetDefaults() async {
+    final settings = AppSettingsService();
+    await settings.initialize();
+    final savedLanguage = settings.selectedLanguage;
+    
+    setState(() {
+      // Map saved language string back to SttLanguage enum
+      if (savedLanguage == 'English (US)') {
+        _selectedLanguage = SttLanguage.english;
+      } else {
+        _selectedLanguage = SttLanguage.english; // Default fallback
+      }
+      _selectedModel = _selectedLanguage.recommendedModel;
+    });
   }
 
-  void _onLanguageChanged(SttLanguage newLanguage) {
+  void _onLanguageChanged(SttLanguage newLanguage) async {
     setState(() {
       _selectedLanguage = newLanguage;
       // Auto-select recommended model for the new language
       _selectedModel = newLanguage.recommendedModel;
     });
     
-    TOAST.sendMessage(
-      MessageType.normal, 
+    // Save to settings
+    final settings = AppSettingsService();
+    await settings.setSelectedLanguage(newLanguage.displayName);
+    
+    toast.sendMessage(
+      MessageType.normal,
       'Language changed to ${newLanguage.displayName}. Recommended model: ${newLanguage.recommendedModel.displayName}'
     );
   }
@@ -41,9 +64,60 @@ class _StartScreenState extends State<StartScreen> {
       _selectedModel = newModel;
     });
     
-    TOAST.sendMessage(
-      MessageType.normal, 
+    toast.sendMessage(
+      MessageType.normal,
       'STT model changed to ${newModel.displayName}'
+    );
+  }
+
+  // Navigate directly to live caption screen
+  Future<void> _startRecording() async {
+    if (_isCheckingLanguagePack) return;
+
+    setState(() {
+      _isCheckingLanguagePack = true;
+    });
+
+    try {
+      // Since we're using English only and it's always available, go directly
+      _navigateToLiveCaptionScreen();
+    } catch (e) {
+      DebugLogger.error('Error starting recording: $e');
+      toast.sendMessage(MessageType.fail, 'Error starting recording: $e');
+    } finally {
+      setState(() {
+        _isCheckingLanguagePack = false;
+      });
+    }
+  }
+
+
+  // Navigate to live caption screen
+  void _navigateToLiveCaptionScreen() {
+    Navigator.push(
+      context,
+      PageRouteBuilder(
+        pageBuilder: (context, animation, secondaryAnimation) => 
+            RecordingScreen(
+              selectedLanguage: _selectedLanguage.displayName,
+              selectedModel: _selectedModel?.displayName ?? 'Whisper Base',
+            ),
+        transitionDuration: const Duration(milliseconds: 300),
+        transitionsBuilder: (context, animation, secondaryAnimation, child) {
+          const begin = Offset(1.0, 0.0);
+          const end = Offset.zero;
+          const curve = Curves.easeInOut;
+
+          var tween = Tween(begin: begin, end: end).chain(
+            CurveTween(curve: curve),
+          );
+
+          return SlideTransition(
+            position: animation.drive(tween),
+            child: child,
+          );
+        },
+      ),
     );
   }
 
@@ -90,70 +164,43 @@ class _StartScreenState extends State<StartScreen> {
         ),
         const SizedBox(height: 24),
         
-        // Language selection (same as landscape)
-        _buildCompactSelector(
-          icon: Icons.language,
-          label: 'Language',
-          value: _selectedLanguage.displayName,
-          items: SttLanguage.values.map((lang) => {
+        // Language selection
+        SelectComponent(
+          data: SttLanguage.values.map((lang) => {
+            'icon': Icons.language,
+            'id': lang.name,
+            'displayName': lang.displayName,
             'value': lang,
-            'label': lang.displayName,
           }).toList(),
-          onChanged: (value) {
-            if (value is SttLanguage) {
-              _onLanguageChanged(value);
-            }
+          initial: SttLanguage.values.indexOf(_selectedLanguage),
+          onChanged: (selectedItem) {
+            final lang = selectedItem['value'] as SttLanguage;
+            _onLanguageChanged(lang);
           },
         ),
         
         const SizedBox(height: 16),
         
-        // STT Model selection (same as landscape)
-        _buildCompactSelector(
-          icon: Icons.psychology,
-          label: 'STT Model',
-          value: _selectedModel?.displayName ?? 'None',
-          items: _selectedLanguage.availableModels.map((model) => {
+        // STT Model selection
+        SelectComponent(
+          data: _selectedLanguage.availableModels.map((model) => {
+            'icon': Icons.psychology,
+            'id': model.name,
+            'displayName': '${model.icon} ${model.displayName}${model == _selectedLanguage.recommendedModel ? ' (Recommended)' : ''}',
             'value': model,
-            'label': '${model.icon} ${model.displayName}${model == _selectedLanguage.recommendedModel ? ' (Recommended)' : ''}',
           }).toList(),
-          onChanged: (value) {
-            if (value is SttModel) {
-              _onModelChanged(value);
-            }
+          initial: _selectedModel != null ? 
+            _selectedLanguage.availableModels.indexOf(_selectedModel!) : 0,
+          onChanged: (selectedItem) {
+            final model = selectedItem['value'] as SttModel;
+            _onModelChanged(model);
           },
         ),
             const SizedBox(height: 24),
             
             // Start button
             ElevatedButton(
-              onPressed: () {
-                Navigator.push(
-                  context,
-                  PageRouteBuilder(
-                    pageBuilder: (context, animation, secondaryAnimation) => 
-                        LiveCaptionScreen(
-                          selectedLanguage: _selectedLanguage.displayName,
-                          selectedModel: _selectedModel?.displayName ?? 'Whisper Base',
-                        ),
-                    transitionDuration: const Duration(milliseconds: 300),
-                    transitionsBuilder: (context, animation, secondaryAnimation, child) {
-                      const begin = Offset(1.0, 0.0); // Start from right
-                      const end = Offset.zero;
-                      const curve = Curves.easeInOut;
-
-                      var tween = Tween(begin: begin, end: end).chain(
-                        CurveTween(curve: curve),
-                      );
-
-                      return SlideTransition(
-                        position: animation.drive(tween),
-                        child: child,
-                      );
-                    },
-                  ),
-                );
-              },
+              onPressed: _isCheckingLanguagePack ? null : _startRecording,
               style: ElevatedButton.styleFrom(
                 backgroundColor: Colors.grey[800],
                 foregroundColor: Colors.white,
@@ -162,14 +209,24 @@ class _StartScreenState extends State<StartScreen> {
                   borderRadius: BorderRadius.circular(8),
                 ),
               ),
-              child: const Row(
+              child: Row(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  Icon(Icons.mic),
-                  SizedBox(width: 8),
+                  if (_isCheckingLanguagePack)
+                    const SizedBox(
+                      width: 20,
+                      height: 20,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
+                      ),
+                    )
+                  else
+                    const Icon(Icons.mic),
+                  const SizedBox(width: 8),
                   Text(
-                    'Start Recording',
-                    style: TextStyle(fontSize: 18),
+                    _isCheckingLanguagePack ? 'Checking...' : 'Start Recording',
+                    style: const TextStyle(fontSize: 18),
                   ),
                 ],
               ),
@@ -183,7 +240,7 @@ class _StartScreenState extends State<StartScreen> {
                 Navigator.push(
                   context,
                   MaterialPageRoute(
-                    builder: (context) => const RecordingsScreen(),
+                    builder: (context) => const RecordingFilesScreen(),
                   ),
                 );
               },
@@ -215,10 +272,10 @@ class _StartScreenState extends State<StartScreen> {
     return Row(
       children: [
         // Left side - App icon (larger)
-        Expanded(
+        const Expanded(
           flex: 3,
           child: Center(
-            child: const SubtitifyIcon(
+            child: SubtitifyIcon(
               size: 160,
               fontSize: 18,
             ),
@@ -246,36 +303,35 @@ class _StartScreenState extends State<StartScreen> {
               const SizedBox(height: 24),
               
               // Language selection (compact)
-              _buildCompactSelector(
-                icon: Icons.language,
-                label: 'Language',
-                value: _selectedLanguage.displayName,
-                items: SttLanguage.values.map((lang) => {
+              SelectComponent(
+                data: SttLanguage.values.map((lang) => {
+                  'icon': Icons.language,
+                  'id': lang.name,
+                  'displayName': lang.displayName,
                   'value': lang,
-                  'label': lang.displayName,
                 }).toList(),
-                onChanged: (value) {
-                  if (value is SttLanguage) {
-                    _onLanguageChanged(value);
-                  }
+                initial: SttLanguage.values.indexOf(_selectedLanguage),
+                onChanged: (selectedItem) {
+                  final lang = selectedItem['value'] as SttLanguage;
+                  _onLanguageChanged(lang);
                 },
               ),
               
               const SizedBox(height: 16),
               
               // STT Model selection (compact)
-              _buildCompactSelector(
-                icon: Icons.psychology,
-                label: 'STT Model',
-                value: _selectedModel?.displayName ?? 'None',
-                items: _selectedLanguage.availableModels.map((model) => {
+              SelectComponent(
+                data: _selectedLanguage.availableModels.map((model) => {
+                  'icon': Icons.psychology,
+                  'id': model.name,
+                  'displayName': '${model.icon} ${model.displayName}${model == _selectedLanguage.recommendedModel ? ' (Recommended)' : ''}',
                   'value': model,
-                  'label': '${model.icon} ${model.displayName}${model == _selectedLanguage.recommendedModel ? ' (Recommended)' : ''}',
                 }).toList(),
-                onChanged: (value) {
-                  if (value is SttModel) {
-                    _onModelChanged(value);
-                  }
+                initial: _selectedModel != null ? 
+                  _selectedLanguage.availableModels.indexOf(_selectedModel!) : 0,
+                onChanged: (selectedItem) {
+                  final model = selectedItem['value'] as SttModel;
+                  _onModelChanged(model);
                 },
               ),
               
@@ -283,33 +339,7 @@ class _StartScreenState extends State<StartScreen> {
               
               // Start button (compact)
               ElevatedButton(
-                onPressed: () {
-                  Navigator.push(
-                    context,
-                    PageRouteBuilder(
-                      pageBuilder: (context, animation, secondaryAnimation) => 
-                          LiveCaptionScreen(
-                            selectedLanguage: _selectedLanguage.displayName,
-                            selectedModel: _selectedModel?.displayName ?? 'Whisper Base',
-                          ),
-                      transitionDuration: const Duration(milliseconds: 300),
-                      transitionsBuilder: (context, animation, secondaryAnimation, child) {
-                        const begin = Offset(1.0, 0.0);
-                        const end = Offset.zero;
-                        const curve = Curves.easeInOut;
-
-                        var tween = Tween(begin: begin, end: end).chain(
-                          CurveTween(curve: curve),
-                        );
-
-                        return SlideTransition(
-                          position: animation.drive(tween),
-                          child: child,
-                        );
-                      },
-                    ),
-                  );
-                },
+                onPressed: _isCheckingLanguagePack ? null : _startRecording,
                 style: ElevatedButton.styleFrom(
                   backgroundColor: Colors.grey[800],
                   foregroundColor: Colors.white,
@@ -318,14 +348,24 @@ class _StartScreenState extends State<StartScreen> {
                     borderRadius: BorderRadius.circular(8),
                   ),
                 ),
-                child: const Row(
+                child: Row(
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
-                    Icon(Icons.mic, size: 20),
-                    SizedBox(width: 8),
+                    if (_isCheckingLanguagePack)
+                      const SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
+                        ),
+                      )
+                    else
+                      const Icon(Icons.mic, size: 20),
+                    const SizedBox(width: 8),
                     Text(
-                      'Start Recording',
-                      style: TextStyle(fontSize: 14),
+                      _isCheckingLanguagePack ? 'Checking...' : 'Start Recording',
+                      style: const TextStyle(fontSize: 14),
                     ),
                   ],
                 ),
@@ -339,7 +379,7 @@ class _StartScreenState extends State<StartScreen> {
                   Navigator.push(
                     context,
                     MaterialPageRoute(
-                      builder: (context) => const RecordingsScreen(),
+                      builder: (context) => const RecordingFilesScreen(),
                     ),
                   );
                 },
@@ -370,50 +410,6 @@ class _StartScreenState extends State<StartScreen> {
     );
   }
   
-  Widget _buildCompactSelector({
-    required IconData icon,
-    required String label,
-    required String value,
-    required List<Map<String, dynamic>> items,
-    required Function(dynamic) onChanged,
-  }) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-      decoration: BoxDecoration(
-        color: Colors.grey[900],
-        borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: Colors.grey[700]!),
-      ),
-      child: Row(
-        children: [
-          Icon(icon, color: Colors.grey, size: 16),
-          const SizedBox(width: 8),
-          Expanded(
-            child: DropdownButton<dynamic>(
-              value: items.firstWhere((item) => item['label'] == value || 
-                      (item['value'] is SttLanguage && (item['value'] as SttLanguage).displayName == value) ||
-                      (item['value'] is SttModel && (item['value'] as SttModel).displayName == value))['value'],
-              dropdownColor: Colors.grey[800],
-              style: const TextStyle(color: Colors.white, fontSize: 12),
-              underline: Container(),
-              isExpanded: true,
-              items: items.map((item) {
-                return DropdownMenuItem(
-                  value: item['value']!,
-                  child: Text(item['label']!),
-                );
-              }).toList(),
-              onChanged: (newValue) {
-                if (newValue != null) {
-                  onChanged(newValue);
-                }
-              },
-            ),
-          ),
-        ],
-      ),
-    );
-  }
   
 }
 
