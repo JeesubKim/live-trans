@@ -10,7 +10,7 @@ import '../interfaces/i_observee.dart';
 /// Avoids inheritance issues by implementing the interface directly
 class SimpleSttRecorder implements IAudioRecorder {
   final SpeechToTextService _sttService;
-  late final SubtitleDisplayManager _subtitleManager;
+  SubtitleDisplayManager _subtitleManager;
   
   // Configuration and state
   late AudioRecorderConfig _config;
@@ -35,8 +35,7 @@ class SimpleSttRecorder implements IAudioRecorder {
   bool _isRestartInProgress = false;
   DateTime? _lastRestartAttempt;
   
-  SimpleSttRecorder(this._sttService) {
-    _subtitleManager = SubtitleDisplayManager();
+  SimpleSttRecorder(this._sttService) : _subtitleManager = SubtitleDisplayManager() {
     // Subscribe to subtitle results to track STT activity
     _subscribeToSubtitleResults();
   }
@@ -316,7 +315,7 @@ class SimpleSttRecorder implements IAudioRecorder {
     DebugLogger.info('🗑️ SimpleSttRecorder._disposeImpl called');
     _clearSTTCallbacks();
     await _sttService.dispose();
-    _subtitleManager.dispose();
+    // Note: SubtitleDisplayManager is now managed by RecordingScreen, don't dispose here
     DebugLogger.info('✅ SimpleSttRecorder._disposeImpl completed');
   }
   
@@ -570,4 +569,24 @@ class SimpleSttRecorder implements IAudioRecorder {
   
   /// Get the subtitle manager for external access
   SubtitleDisplayManager get subtitleManager => _subtitleManager;
+  
+  /// Set a new subtitle manager (for external management)
+  void setSubtitleManager(SubtitleDisplayManager newManager) {
+    // Cancel current subscription
+    _subtitleSubscription?.cancel();
+    
+    // Dispose old manager if it's different
+    if (_subtitleManager != newManager) {
+      // Don't dispose the old one as it might be managed externally
+      DebugLogger.info('🔄 Replacing SubtitleDisplayManager');
+    }
+    
+    // Set new manager
+    _subtitleManager = newManager;
+    
+    // Re-subscribe to new manager
+    _subscribeToSubtitleResults();
+    
+    DebugLogger.info('✅ SubtitleDisplayManager replaced successfully');
+  }
 }

@@ -154,7 +154,6 @@ class _RecordingScreenState extends State<RecordingScreen>
   @override
   void dispose() {
     DebugLogger.info('🔄 Disposing RecordingScreen...');
-    _disposeAsync();
     
     // Cancel timers first
     _autoHideTimer?.cancel();
@@ -164,17 +163,10 @@ class _RecordingScreenState extends State<RecordingScreen>
     // Cancel new pipeline streams
     _waveformSubscription?.cancel();
     
-    // Dispose audio pipeline
-    _audioPipeline?.dispose();
-    
     // Cancel subtitle streams
     _historySubscription?.cancel();
     _currentSubscription?.cancel();
     _realtimeSubscription?.cancel();
-    
-    // Dispose services
-    _subtitleManager.dispose();
-    _audioFileService.dispose();
     
     // Dispose animations
     _blinkController.dispose();
@@ -184,15 +176,27 @@ class _RecordingScreenState extends State<RecordingScreen>
     // Dispose ScrollController to prevent memory leaks
     _subtitleScrollController.dispose();
     
+    // Start async dispose process (fire and forget)
+    _disposeAsync();
+    
     super.dispose();
   }
   
-  // Async dispose for audio pipeline cleanup
+  // Async dispose for all async resources
   Future<void> _disposeAsync() async {
     try {
+      // Dispose subtitle manager first
+      await _subtitleManager.dispose();
+      
+      // Dispose audio pipeline
       await _audioPipeline?.dispose();
+      
+      // Dispose audio file service
+      _audioFileService.dispose();
+      
+      DebugLogger.info('✅ RecordingScreen async disposal completed');
     } catch (e) {
-      DebugLogger.error('Error disposing audio pipeline: $e');
+      DebugLogger.error('Error during async disposal: $e');
     }
   }
   
@@ -272,13 +276,23 @@ class _RecordingScreenState extends State<RecordingScreen>
       // Create STT-based audio pipeline
       _audioPipeline = await AudioPipelineFactory.createSTTPipeline();
       
-      // CRITICAL: Get the SubtitleDisplayManager from SimpleSttRecorder
+      // Initialize our SubtitleDisplayManager with auto-save
+      await _subtitleManager.initialize();
+      final sessionId = await _subtitleManager.startSession();
+      
+      if (sessionId != null) {
+        DebugLogger.info('✅ Session started successfully: $sessionId');
+      } else {
+        DebugLogger.error('❌ Failed to start session');
+      }
+      
+      // CRITICAL: Provide our SubtitleDisplayManager to SimpleSttRecorder
       final recorder = _audioPipeline!.recorder;
       if (recorder is SimpleSttRecorder) {
-        // Replace our SubtitleDisplayManager with the one from STT
-        _subtitleManager.dispose(); // Dispose old one
-        _subtitleManager = recorder.subtitleManager; // Use STT's manager
-        DebugLogger.info('🔗 Connected to STT SubtitleDisplayManager');
+        // Replace STT's SubtitleDisplayManager with ours
+        recorder.setSubtitleManager(_subtitleManager);
+        DebugLogger.info('🔗 Provided auto-save SubtitleDisplayManager to STT');
+        DebugLogger.info('📊 Session active: ${_subtitleManager.isSessionActive}');
       }
       
       // Subscribe to waveform data from pipeline
@@ -495,28 +509,18 @@ class _RecordingScreenState extends State<RecordingScreen>
       _currentSubscription?.cancel();
       _realtimeSubscription?.cancel();
       
-      // Generate unique session ID for linking audio and subtitles
-      final sessionId = DateTime.now().millisecondsSinceEpoch.toString();
+      // Get session info before stopping
+      final sessionInfo = _subtitleManager.currentSessionInfo;
+      final subtitleCount = sessionInfo?['subtitleCount'] ?? 0;
       
-      // Save subtitle file with current session data
-      final subtitleHistory = _subtitleManager.getFullHistory();
-      if (subtitleHistory.isNotEmpty) {
-        final fileName = await _fileManager.saveSubtitleFile(
-          title: 'Recording_$sessionId',
-          category: 'Recording',
-          language: _selectedLanguage,
-          model: _selectedModel,
-          subtitles: subtitleHistory,
-          duration: _recordingDuration,
-        );
-        
-        if (fileName.isNotEmpty) {
-          DebugLogger.info('📝 Subtitle file saved: $fileName');
-          final subtitleCount = subtitleHistory.length;
-          globalToast.success('Recording saved ($subtitleCount subtitles)');
-        }
+      if (subtitleCount > 0) {
+        DebugLogger.info('📝 Recording stopped with $subtitleCount auto-saved subtitles');
+        globalToast.success('Recording stopped ($subtitleCount subtitles auto-saved)');
       } else {
+        DebugLogger.info('📝 Recording stopped (no subtitles)');
         globalToast.success('Recording stopped');
+        // End session without saving if no subtitles
+        await _subtitleManager.endSession(save: false);
       }
     } catch (e) {
       DebugLogger.error('Error stopping recording: $e');
@@ -544,7 +548,7 @@ class _RecordingScreenState extends State<RecordingScreen>
     });
   }
   
-  void _toggleListening() {
+  void _toggleListening() async {
     if (_isListening) {
       // When stopping, show save dialog
       _stopRecording();
@@ -556,8 +560,9 @@ class _RecordingScreenState extends State<RecordingScreen>
       // Show save dialog when stopping
       _showSaveDialog();
     } else {
-      // When starting, reinitialize the pipeline
-      _subtitleManager.clearAll();
+      // When starting, create a new SubtitleDisplayManager instance
+      await _subtitleManager.dispose();
+      _subtitleManager = SubtitleDisplayManager();
       _initializeAudioPipeline();
     }
   }
@@ -610,30 +615,31 @@ class _RecordingScreenState extends State<RecordingScreen>
         captionHistory: _captionHistory,
         onSave: (title, category) async {
           try {
-            // Get full subtitle history from manager
-            final fullHistory = _subtitleManager.getFullHistory();
-            
-            if (fullHistory.isEmpty) {
-              globalToast.error('No subtitles to save');
-              return;
-            }
-            
-            // Save subtitle file
-            final filePath = await _fileManager.saveSubtitleFile(
+            // End session with save using new system
+            final filePath = await _subtitleManager.endSession(
+              save: true,
               title: title,
               category: category,
               language: _selectedLanguage,
               model: _selectedModel,
-              subtitles: fullHistory,
               duration: _recordingDuration,
             );
             
-            globalToast.success('Recording saved: $title');
-            DebugLogger.info('Subtitle file saved to: $filePath');
+            if (filePath != null) {
+              globalToast.success('Recording saved: $title');
+              DebugLogger.info('Session saved to: $filePath');
+              // Close dialog and return to main screen
+              Navigator.of(context).popUntil((route) => route.isFirst);
+              return null; // Success - close dialog
+            } else {
+              // Return error message to keep dialog open
+              return 'No subtitles to save. Please record some speech first.';
+            }
             
           } catch (e) {
-            DebugLogger.error('Error saving subtitle file: $e');
-            globalToast.error('Failed to save recording');
+            DebugLogger.error('Error saving session: $e');
+            // Return error message to keep dialog open
+            return 'Failed to save recording: ${e.toString()}';
           }
         },
         onDiscard: () {
@@ -674,14 +680,24 @@ class _RecordingScreenState extends State<RecordingScreen>
         );
       },
       pageBuilder: (context, animation, secondaryAnimation) => _DiscardConfirmationDialog(
-        onConfirm: () {
-          setState(() {
-            _captionHistory.clear();
-            _currentText = '';
-          });
-          // Close all dialogs and go back to start screen
-          Navigator.of(context).popUntil((route) => route.isFirst);
-          globalToast.success('Recording discarded');
+        onConfirm: () async {
+          try {
+            // End session without saving (discard temp files)
+            await _subtitleManager.endSession(save: false);
+            
+            setState(() {
+              _captionHistory.clear();
+              _currentText = '';
+            });
+            
+            // Close all dialogs and go back to start screen
+            Navigator.of(context).popUntil((route) => route.isFirst);
+            globalToast.success('Recording discarded');
+            
+          } catch (e) {
+            DebugLogger.error('Error discarding session: $e');
+            globalToast.error('Failed to discard recording');
+          }
         },
       ),
     );
@@ -1237,7 +1253,7 @@ class _RecordingScreenState extends State<RecordingScreen>
 class _SaveRecordingDialog extends StatefulWidget {
   final String defaultTitle;
   final List<String> captionHistory;
-  final Future<void> Function(String title, String category) onSave;
+  final Future<String?> Function(String title, String category) onSave;
   final VoidCallback onDiscard;
   final VoidCallback onResume;
   final BuildContext context;
@@ -1258,12 +1274,14 @@ class _SaveRecordingDialog extends StatefulWidget {
 class _SaveRecordingDialogState extends State<_SaveRecordingDialog> {
   late TextEditingController _titleController;
   String _selectedCategory = 'Meeting';
+  String? _errorMessage;
+  bool _isSaving = false;
   
   final List<String> _categories = [
     'Meeting',
     'Lecture',
     'Interview',
-    'Personal',
+    'Personal',  
     'Other',
   ];
 
@@ -1430,6 +1448,34 @@ class _SaveRecordingDialogState extends State<_SaveRecordingDialog> {
                 
                 const SizedBox(height: 32),
                 
+                // Error message
+                if (_errorMessage != null) ...[
+                  Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: Colors.red.withOpacity(0.1),
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: Colors.red, width: 1),
+                    ),
+                    child: Row(
+                      children: [
+                        const Icon(Icons.error_outline, color: Colors.red, size: 20),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            _errorMessage!,
+                            style: const TextStyle(
+                              color: Colors.red,
+                              fontSize: 14,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                ],
+                
                 // Action buttons
                 Row(
                   children: [
@@ -1447,15 +1493,34 @@ class _SaveRecordingDialogState extends State<_SaveRecordingDialog> {
                     const SizedBox(width: 16),
                     Expanded(
                       child: ElevatedButton(
-                        onPressed: () async {
+                        onPressed: _isSaving ? null : () async {
+                          setState(() {
+                            _isSaving = true;
+                            _errorMessage = null;
+                          });
+                          
                           try {
-                            await widget.onSave(_titleController.text, _selectedCategory);
-                            // Go back to main screen (StartScreen)
-                            if (mounted) {
-                              Navigator.of(context).popUntil((route) => route.isFirst);
+                            // Use default title if empty
+                            final title = _titleController.text.trim().isEmpty 
+                                ? widget.defaultTitle 
+                                : _titleController.text.trim();
+                            final errorMessage = await widget.onSave(title, _selectedCategory);
+                            
+                            if (errorMessage == null) {
+                              // Success - dialog will be closed by onSave callback
+                              return;
+                            } else {
+                              // Error - show message and keep dialog open
+                              setState(() {
+                                _errorMessage = errorMessage;
+                                _isSaving = false;
+                              });
                             }
                           } catch (e) {
-                            // Error handling is done in the onSave callback
+                            setState(() {
+                              _errorMessage = 'Unexpected error: ${e.toString()}';
+                              _isSaving = false;
+                            });
                             DebugLogger.error('Save dialog error: $e');
                           }
                         },
@@ -1464,7 +1529,16 @@ class _SaveRecordingDialogState extends State<_SaveRecordingDialog> {
                           foregroundColor: Colors.white,
                           padding: const EdgeInsets.symmetric(vertical: 12),
                         ),
-                        child: const Text('Save'),
+                        child: _isSaving 
+                            ? const SizedBox(
+                                width: 20,
+                                height: 20,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                  valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
+                                ),
+                              )
+                            : const Text('Save'),
                       ),
                     ),
                   ],

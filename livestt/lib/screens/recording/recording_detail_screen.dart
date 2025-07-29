@@ -1,7 +1,8 @@
 import 'package:flutter/material.dart';
 import 'dart:math' as math;
 import '../../utils/global_toast.dart';
-import '../../services/file_recording_manager.dart';
+import '../../services/subtitle_file_manager.dart';
+import '../../services/subtitle_display_manager.dart';
 import '../../components/audio_waveform_component.dart';
 
 class RecordingDetailScreen extends StatefulWidget {
@@ -23,7 +24,8 @@ class _RecordingDetailScreenState extends State<RecordingDetailScreen> {
   double _currentPosition = 0.0; // 0.0 to 1.0
   late double _totalDuration;
   List<double> _waveformData = [];
-  late Map<String, dynamic> _recordingData;
+  SubtitleFile? _subtitleFile;
+  final SubtitleFileManager _fileManager = SubtitleFileManager();
   
   // Search functionality
   bool _isSearching = false;
@@ -40,11 +42,19 @@ class _RecordingDetailScreenState extends State<RecordingDetailScreen> {
   }
 
   Future<void> _loadRecordingData() async {
-    final data = await FileRecordingManager.getRecordingDetail(widget.sessionId);
-    setState(() {
-      _recordingData = data ?? {};
-      _totalDuration = (_recordingData['totalSeconds'] ?? 930).toDouble();
-    });
+    try {
+      final subtitleFile = await _fileManager.loadSubtitleFile(widget.sessionId);
+      setState(() {
+        _subtitleFile = subtitleFile;
+        _totalDuration = (subtitleFile.metadata.duration?.inSeconds ?? 930).toDouble();
+      });
+    } catch (e) {
+      print('Error loading subtitle file: $e');
+      setState(() {
+        _subtitleFile = null;
+        _totalDuration = 930.0;
+      });
+    }
   }
 
   void _generateWaveformData() {
@@ -59,22 +69,30 @@ class _RecordingDetailScreenState extends State<RecordingDetailScreen> {
     final secs = (seconds % 60).toInt().toString().padLeft(2, '0');
     return '$minutes:$secs';
   }
+  
+  String _formatTimestamp(DateTime timestamp) {
+    // timestamp is relative to epoch, so we can use it directly for elapsed time
+    final totalSeconds = timestamp.millisecondsSinceEpoch ~/ 1000;
+    final minutes = totalSeconds ~/ 60;
+    final seconds = totalSeconds % 60;
+    return '${minutes.toString().padLeft(2, '0')}:${seconds.toString().padLeft(2, '0')}';
+  }
 
   // Helper function to check if current playback time matches this text item
-  bool _isCurrentlyPlaying(int textIndex, List<Map<String, dynamic>> transcripts) {
-    if (textIndex >= transcripts.length) return false;
+  bool _isCurrentlyPlaying(int textIndex, List<SubtitleItem> subtitles) {
+    if (textIndex >= subtitles.length) return false;
     
     final currentSeconds = _currentPosition * _totalDuration;
-    final currentTextSeconds = transcripts[textIndex]['seconds'] as int;
+    final currentTextSeconds = subtitles[textIndex].timestamp.millisecondsSinceEpoch / 1000.0;
     
     // Check if current time falls within this text item's range
     // If it's the last item, it's current if playback time >= its start time
-    if (textIndex == transcripts.length - 1) {
+    if (textIndex == subtitles.length - 1) {
       return currentSeconds >= currentTextSeconds;
     }
     
     // For other items, check if current time is between this item and the next
-    final nextTextSeconds = transcripts[textIndex + 1]['seconds'] as int;
+    final nextTextSeconds = subtitles[textIndex + 1].timestamp.millisecondsSinceEpoch / 1000.0;
     return currentSeconds >= currentTextSeconds && currentSeconds < nextTextSeconds;
   }
 
@@ -100,12 +118,12 @@ class _RecordingDetailScreenState extends State<RecordingDetailScreen> {
       _searchResults.clear();
       _currentSearchIndex = -1;
 
-      if (query.isNotEmpty) {
-        // Search through actual recording transcripts
-        final transcripts = _recordingData['transcripts'] as List<Map<String, dynamic>>? ?? [];
+      if (query.isNotEmpty && _subtitleFile != null) {
+        // Search through subtitle items
+        final subtitles = _subtitleFile!.subtitles;
 
-        for (int textIndex = 0; textIndex < transcripts.length; textIndex++) {
-          final text = (transcripts[textIndex]['text']! as String).toLowerCase();
+        for (int textIndex = 0; textIndex < subtitles.length; textIndex++) {
+          final text = subtitles[textIndex].text.toLowerCase();
           
           // Find all matches in this text
           int start = 0;
@@ -245,8 +263,8 @@ class _RecordingDetailScreenState extends State<RecordingDetailScreen> {
 
   @override
   Widget build(BuildContext context) {
-    // Get actual recording transcripts
-    final transcripts = _recordingData['transcripts'] as List<Map<String, dynamic>>? ?? [];
+    // Get subtitle items
+    final subtitles = _subtitleFile?.subtitles ?? [];
 
     return Scaffold(
       backgroundColor: Colors.black,
@@ -339,11 +357,11 @@ class _RecordingDetailScreenState extends State<RecordingDetailScreen> {
                   children: [
                     Icon(Icons.schedule, size: 16, color: Colors.grey[400]),
                     SizedBox(width: 4),
-                    Text('Total time: ${_recordingData['duration'] ?? 'N/A'}', style: TextStyle(color: Colors.white)),
+                    Text('Total time: ${_formatDuration(_totalDuration)}', style: TextStyle(color: Colors.white)),
                     SizedBox(width: 16),
                     Icon(Icons.text_fields, size: 16, color: Colors.grey[400]),
                     SizedBox(width: 4),
-                    Text('Texts: ${transcripts.length} items', style: TextStyle(color: Colors.white)),
+                    Text('Texts: ${subtitles.length} items', style: TextStyle(color: Colors.white)),
                   ],
                 ),
               ],
@@ -408,14 +426,13 @@ class _RecordingDetailScreenState extends State<RecordingDetailScreen> {
           Expanded(
             child: ListView.builder(
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-              itemCount: transcripts.length,
+              itemCount: subtitles.length,
               itemBuilder: (context, index) {
-                final textData = transcripts[index];
+                final subtitle = subtitles[index];
                 return GestureDetector(
                   onTap: () {
-                    // Use seconds from data object - whole card clickable
-                    final seconds = textData['seconds'] as int;
-                    // final timestamp = textData['timestamp']! as String; // Unused
+                    // Use timestamp from subtitle item
+                    final seconds = subtitle.timestamp.millisecondsSinceEpoch / 1000.0;
                     
                     setState(() {
                       _currentPosition = seconds / _totalDuration;
@@ -426,7 +443,7 @@ class _RecordingDetailScreenState extends State<RecordingDetailScreen> {
                     margin: const EdgeInsets.only(bottom: 1),
                     shape: RoundedRectangleBorder(
                       borderRadius: BorderRadius.circular(4.0),
-                      side: _isCurrentlyPlaying(index, transcripts)
+                      side: _isCurrentlyPlaying(index, subtitles)
                           ? BorderSide(color: Colors.white, width: 2.0)
                           : BorderSide.none,
                     ),
@@ -446,7 +463,7 @@ class _RecordingDetailScreenState extends State<RecordingDetailScreen> {
                               borderRadius: BorderRadius.circular(8),
                             ),
                             child: Text(
-                              textData['timestamp']! as String,
+                              _formatTimestamp(subtitle.timestamp),
                               style: TextStyle(
                                 fontSize: 9,
                                 color: Colors.white,
@@ -457,7 +474,7 @@ class _RecordingDetailScreenState extends State<RecordingDetailScreen> {
                           const SizedBox(width: 6),
                           // Text in the middle, expanded
                           Expanded(
-                            child: _buildHighlightedText(textData['text']! as String, index),
+                            child: _buildHighlightedText(subtitle.text, index),
                           ),
                           // Copy button on the right - prevent propagation
                           _CopyButton(
@@ -517,42 +534,8 @@ class _RecordingDetailScreenState extends State<RecordingDetailScreen> {
   }
 
   Future<void> _exportToFormat(String format) async {
-    try {
-      String? content;
-      String fileName = '';
-      
-      if (format == 'txt') {
-        content = await FileRecordingManager.exportToTxt(widget.sessionId);
-        fileName = '${widget.sessionId}.txt';
-      } else if (format == 'csv') {
-        content = await FileRecordingManager.exportToCsv(widget.sessionId);
-        fileName = '${widget.sessionId}.csv';
-      } else {
-        toast.sendMessage(MessageType.fail, 'Invalid export format');
-        return;
-      }
-      
-      if (content != null) {
-        final success = await FileRecordingManager.saveExportedFile(
-          content: content,
-          fileName: fileName,
-        );
-        
-        if (success) {
-          toast.sendMessage(MessageType.indicator, 
-            'Exported to $fileName successfully');
-        } else {
-          toast.sendMessage(MessageType.fail, 
-            'Failed to export $fileName');
-        }
-      } else {
-        toast.sendMessage(MessageType.fail, 
-          'Failed to generate export content');
-      }
-    } catch (e) {
-      toast.sendMessage(MessageType.fail, 
-        'Export error: $e');
-    }
+    // TODO: Implement export functionality for new subtitle format
+    globalToast.warning('Export feature coming soon for new format');
   }
 }
 
